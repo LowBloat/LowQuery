@@ -3,6 +3,7 @@ mod integration_tests;
 pub mod oracle;
 pub mod pg_value;
 pub mod postgres;
+pub mod tns;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{ConnectionProfile, DbColumn, DbObject, Engine, ExecRequest, ExecResult};

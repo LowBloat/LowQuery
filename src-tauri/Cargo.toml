@@ -1,6 +1,6 @@
 [package]
 name = "lowquery"
-version = "0.1.0"
+version = "0.1.1"
 description = "Lightweight SQL client for multiple databases"
 authors = ["LowBloat"]
 license = "AGPL-3.0-only"
@@ -38,6 +38,10 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 oracledb = "=26.0.0-beta.4"
 # Passwords in the OS credential store.
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Oracle homes registered by Windows installers.
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
 
 [profile.release]
 codegen-units = 1

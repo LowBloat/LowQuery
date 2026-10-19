@@ -27,7 +27,9 @@ pub enum OracleConnectType {
     Service,
     /// Classic SID, built as a descriptor.
     Sid,
-    /// Full descriptor, tnsnames.ora alias or Easy Connect Plus.
+    /// Alias from a tnsnames.ora file.
+    Tns,
+    /// Full descriptor or Easy Connect Plus string.
     Custom,
 }
 
@@ -80,7 +82,11 @@ pub struct ConnectionProfile {
     pub ssl_mode: SslMode,
     pub oracle_connect_type: OracleConnectType,
     pub connect_string: String,
-    /// Directory with tnsnames.ora / sqlnet.ora (TNS_ADMIN).
+    /// Alias looked up in tnsnames.ora when `oracle_connect_type` is `Tns`.
+    pub tns_alias: String,
+    /// Directory with tnsnames.ora / sqlnet.ora (TNS_ADMIN). Empty means
+    /// automatic: TNS_ADMIN, ORACLE_HOME, registered Oracle homes and clients
+    /// on PATH.
     pub config_dir: Option<String>,
     pub oracle_privilege: OraclePrivilege,
 }
@@ -100,6 +106,7 @@ impl Default for ConnectionProfile {
             ssl_mode: SslMode::default(),
             oracle_connect_type: OracleConnectType::default(),
             connect_string: String::new(),
+            tns_alias: String::new(),
             config_dir: None,
             oracle_privilege: OraclePrivilege::default(),
         }

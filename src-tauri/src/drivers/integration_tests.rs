@@ -308,3 +308,67 @@ async fn oracle_types_limits_and_output() {
     let schemas = s.list_schemas().await.unwrap();
     assert!(!schemas.is_empty());
 }
+
+#[tokio::test]
+#[ignore]
+async fn oracle_connects_through_tns_alias() {
+    let Some((base, pw)) = ora_profile() else {
+        return;
+    };
+    // A Latin-1 tnsnames.ora with a domain-qualified alias, as corporate
+    // files often are.
+    let dir = std::env::temp_dir().join(format!("lq-tns-it-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut file = b"# Produ\xe7\xe3o\n".to_vec();
+    file.extend_from_slice(
+        format!(
+            "LQTEST.WORLD =\n  (DESCRIPTION =\n    (ADDRESS = (PROTOCOL = TCP)(HOST = {})(PORT = {}))\n    (CONNECT_DATA = (SERVICE_NAME = {}))\n  )\n",
+            base.host, base.port, base.database
+        )
+        .as_bytes(),
+    );
+    std::fs::write(dir.join("tnsnames.ora"), file).unwrap();
+    std::fs::write(dir.join("sqlnet.ora"), "NAMES.DEFAULT_DOMAIN = WORLD\n").unwrap();
+
+    // Folder chosen in the profile.
+    let profile = ConnectionProfile {
+        oracle_connect_type: OracleConnectType::Tns,
+        tns_alias: "lqtest".into(),
+        config_dir: Some(dir.display().to_string()),
+        ..base.clone()
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection via folder");
+    assert_eq!(
+        one_row(&s, "select 1 from dual").await[0].as_deref(),
+        Some("1")
+    );
+
+    // Automatic discovery through TNS_ADMIN.
+    std::env::set_var("TNS_ADMIN", &dir);
+    let auto = ConnectionProfile {
+        config_dir: None,
+        ..profile.clone()
+    };
+    let s = Session::open(&auto, pw.as_deref())
+        .await
+        .expect("connection via TNS_ADMIN");
+    assert_eq!(
+        one_row(&s, "select 2 from dual").await[0].as_deref(),
+        Some("2")
+    );
+
+    // Unknown alias names the files that were searched.
+    let missing = ConnectionProfile {
+        tns_alias: "nope".into(),
+        ..auto
+    };
+    let err = match Session::open(&missing, pw.as_deref()).await {
+        Ok(_) => panic!("unknown alias connected"),
+        Err(e) => e,
+    };
+    assert!(err.message.contains("tnsnames.ora"), "{err}");
+    std::env::remove_var("TNS_ADMIN");
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -97,14 +97,20 @@ fn validate(p: &ConnectionProfile) -> AppResult<()> {
     if p.name.trim().is_empty() {
         return Err(AppError::invalid("Enter a name for the connection."));
     }
-    let custom = p.engine == crate::model::Engine::Oracle
-        && p.oracle_connect_type == crate::model::OracleConnectType::Custom;
-    if custom {
-        if p.connect_string.trim().is_empty() {
-            return Err(AppError::invalid("Enter the descriptor or TNS alias."));
+    use crate::model::{Engine, OracleConnectType};
+    let oracle_type = (p.engine == Engine::Oracle).then_some(p.oracle_connect_type);
+    match oracle_type {
+        Some(OracleConnectType::Custom) if p.connect_string.trim().is_empty() => {
+            return Err(AppError::invalid(
+                "Enter the descriptor or Easy Connect string.",
+            ));
         }
-    } else if p.host.trim().is_empty() {
-        return Err(AppError::invalid("Enter the host."));
+        Some(OracleConnectType::Tns) if p.tns_alias.trim().is_empty() => {
+            return Err(AppError::invalid("Choose a TNS alias."));
+        }
+        Some(OracleConnectType::Custom | OracleConnectType::Tns) => {}
+        _ if p.host.trim().is_empty() => return Err(AppError::invalid("Enter the host.")),
+        _ => {}
     }
     Ok(())
 }
@@ -122,6 +128,14 @@ pub fn stored_password(id: &str) -> AppResult<Option<String>> {
         Err(keyring::Error::NoEntry) => Ok(None),
         Err(e) => Err(e.into()),
     }
+}
+
+/// Stores a password typed at connect time when the profile keeps passwords.
+pub fn remember_password(id: &str, password: &str) -> AppResult<()> {
+    if id.is_empty() || password.is_empty() {
+        return Ok(());
+    }
+    Ok(entry(id)?.set_password(password)?)
 }
 
 fn delete_password(id: &str) -> AppResult<()> {

@@ -21,6 +21,42 @@ const profiles: ConnectionProfile[] = [
 	},
 ];
 
+// tnsnames.ora entries as the backend reports them (see src-tauri/src/drivers/tns.rs).
+function tnsEntry(alias: string, host: string, port: number, service: string) {
+	return {
+		alias,
+		descriptor: `(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=${host})(PORT=${port}))(CONNECT_DATA=(SERVICE_NAME=${service})))`,
+		host,
+		port,
+		serviceName: service,
+		sid: null,
+		protocol: "TCP",
+	};
+}
+
+const tnsSources = [
+	{
+		dir: String.raw`C:\oracle\product\19.0.0\client_1\network\admin`,
+		label: "OraClient19Home1",
+		origin: "Oracle home",
+		error: null,
+		entries: [
+			tnsEntry("ERPPRD", "erp-db.internal", 1521, "erppdb"),
+			tnsEntry("ERPPRD.WORLD", "erp-db.internal", 1521, "erppdb"),
+			tnsEntry("ERPHML", "erp-hml.internal", 1521, "erphml"),
+			tnsEntry("BI", "bi-db.internal", 1522, "bipdb"),
+			tnsEntry("LEGACY", "legacy-db.internal", 1521, "orcl"),
+		],
+	},
+	{
+		dir: String.raw`C:\oracle\instantclient_23_5\network\admin`,
+		label: String.raw`C:\oracle\instantclient_23_5`,
+		origin: "Instant Client on PATH",
+		error: null,
+		entries: [tnsEntry("DEVDB", "localhost", 1521, "FREEPDB1")],
+	},
+];
+
 const FIRST = [
 	"Olivia", "Liam", "Emma", "Noah", "Ava", "Ethan", "Sophia", "Mason", "Isabella", "Lucas",
 	"Mia", "James", "Amelia", "Benjamin", "Harper", "Henry", "Evelyn", "Alexander", "Abigail", "Daniel",
@@ -128,6 +164,10 @@ export function installDevMock() {
 		switch (cmd) {
 			case "list_profiles":
 				return profiles;
+			case "oracle_tns_sources":
+				return tnsSources;
+			case "oracle_tns_folder":
+				return { ...tnsSources[1], dir: args.path, label: args.path, origin: "Selected folder" };
 			case "save_profile": {
 				const p = { ...args.profile, id: args.profile.id || `p${++n}` };
 				const i = profiles.findIndex((x) => x.id === p.id);

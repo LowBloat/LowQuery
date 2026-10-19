@@ -32,6 +32,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/postgres.rs` | PostgreSQL session on `tokio-postgres` |
 | `drivers/pg_value.rs` | Binary decoding of PostgreSQL types into server-style text |
 | `drivers/oracle.rs` | Oracle session on the official `oracledb` thin driver |
+| `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
 | `drivers/integration_tests.rs` | Tests against real servers (`#[ignore]`, see CONTRIBUTING) |
 
 ### PostgreSQL
@@ -49,6 +50,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 - SQL statements lose their trailing `;`, PL/SQL keeps it, and a `/` on its own line ends a block, as in SQL*Plus.
 - `DBMS_OUTPUT` is enabled when the session opens and read after each non-query statement.
 - The driver cannot interrupt a running call yet; a script stops before the next statement instead.
+- TNS aliases are resolved by `tns.rs`, not by the driver: it searches the same places an Oracle client does plus clients on `PATH` and the Windows registry, reads Latin-1 files, follows `IFILE` and applies `NAMES.DEFAULT_DOMAIN`. The driver receives the full descriptor and the folder, which it still uses for `sqlnet.ora`.
 
 ## Interface side (`src`)
 
@@ -60,6 +62,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/sql/ident.ts` | Identifier quoting and preview queries per engine |
 | `lib/state/workspace.svelte.ts` | Tabs, sessions, execution, transactions, drafts |
 | `lib/state/explorer.svelte.ts` | Schema browser and autocompletion namespace |
+| `lib/state/tns.svelte.ts` | Detected `tnsnames.ora` sources and aliases for the connection and import dialogs |
 | `lib/components/` | Editor, grid, results, sidebar, dialogs |
 | `lib/dev-mock.ts` | Development-only backend for `bun run dev` in a browser |
 

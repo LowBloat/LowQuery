@@ -14,7 +14,7 @@ use oracledb::{
 };
 use parking_lot::Mutex;
 
-use super::{first_keywords, TxState};
+use super::{first_keywords, tns, TxState};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ColumnInfo, ConnectionProfile, DbColumn, DbObject, ExecRequest, ExecResult, OracleConnectType,
@@ -50,7 +50,41 @@ pub fn connect_string(profile: &ConnectionProfile) -> String {
         OracleConnectType::Sid => format!(
             "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={host})(PORT={port}))(CONNECT_DATA=(SID={target})))"
         ),
+        OracleConnectType::Tns => profile.tns_alias.trim().to_string(),
         OracleConnectType::Custom => profile.connect_string.trim().to_string(),
+    }
+}
+
+/// Connect string and network configuration folder for the driver. TNS
+/// aliases are resolved to their descriptor here (see [`super::tns`]); the
+/// folder still goes to the driver for `sqlnet.ora` settings.
+fn network_target(profile: &ConnectionProfile) -> AppResult<(String, Option<String>)> {
+    let own_dir = profile
+        .config_dir
+        .as_deref()
+        .filter(|d| !d.trim().is_empty());
+    match profile.oracle_connect_type {
+        OracleConnectType::Tns => {
+            let (descriptor, dir) = tns::resolve(&profile.tns_alias, own_dir)?;
+            Ok((descriptor, Some(dir.display().to_string())))
+        }
+        OracleConnectType::Custom => {
+            let target = connect_string(profile);
+            let dir = own_dir
+                .map(str::to_string)
+                .or_else(|| tns::default_dir().map(|d| d.display().to_string()));
+            // A bare name is an alias: resolve it here so Latin-1 files work.
+            let is_alias = !target.is_empty() && !target.contains(['(', '/', ':', '@', ' ']);
+            if is_alias {
+                if let Ok((descriptor, found)) = tns::resolve(&target, own_dir) {
+                    return Ok((descriptor, Some(found.display().to_string())));
+                }
+            }
+            Ok((target, dir))
+        }
+        OracleConnectType::Service | OracleConnectType::Sid => {
+            Ok((connect_string(profile), own_dir.map(str::to_string)))
+        }
     }
 }
 
@@ -58,15 +92,16 @@ pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> App
     let profile = profile.clone();
     let password = password.unwrap_or_default().to_string();
     blocking(move || {
+        let (target, config_dir) = network_target(&profile)?;
         let mut cfg = oracledb::Config::default();
-        if let Some(dir) = profile.config_dir.as_deref().filter(|d| !d.trim().is_empty()) {
-            cfg = cfg.set_config_dir(dir.trim());
+        if let Some(dir) = &config_dir {
+            cfg = cfg.set_config_dir(dir);
         }
         cfg = cfg
             .set_credentials(profile.user.trim(), &password)
             .set_program("LowQuery")
             .map_err(connection_error)?
-            .set_connect_string(&connect_string(&profile))
+            .set_connect_string(&target)
             .map_err(connection_error)?;
         if profile.oracle_privilege != OraclePrivilege::None {
             cfg = cfg.set_auth_mode(profile.oracle_privilege.auth_mode());

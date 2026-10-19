@@ -34,7 +34,9 @@
 		Columns3,
 		KeyRound,
 		Play,
+		FileInput,
 	} from "@lucide/svelte";
+	import { tns } from "../state/tns.svelte";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer, RELATION_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
@@ -119,6 +121,12 @@
 
 	<div class="lq-side__section">
 		<h2 class="lq-side__title">Connections</h2>
+		<span class="ca-toolbar-spacer"></span>
+		<Tooltip content="Import Oracle connections from tnsnames.ora">
+			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="Import from tnsnames.ora" onclick={() => (tns.importOpen = true)}>
+				<FileInput size={16} />
+			</IconButton>{/snippet}
+		</Tooltip>
 		<Tooltip content="New connection">
 			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="New connection" onclick={() => (workspace.editing = emptyProfile())}>
 				<Plus size={16} />
@@ -162,7 +170,11 @@
 							</span>
 							<span class="lq-tree__conn-text">
 								<span class="lq-tree__label">{p.name}</span>
-								<span class="lq-tree__sub">{p.user}@{p.engine === "oracle" && p.oracleConnectType === "custom" ? "descriptor" : p.host}</span>
+								<span class="lq-tree__sub">{p.user}@{p.engine === "oracle" && p.oracleConnectType === "tns"
+										? p.tnsAlias
+										: p.engine === "oracle" && p.oracleConnectType === "custom"
+											? "descriptor"
+											: p.host}</span>
 							</span>
 						</button>
 						{#if tree?.loading}

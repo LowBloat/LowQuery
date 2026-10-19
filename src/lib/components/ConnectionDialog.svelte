@@ -11,9 +11,10 @@
 		Switch,
 		Alert,
 		FormSection,
+		Combobox,
 	} from "@codeatlasdev/ui";
-	import { open as openDialog } from "@tauri-apps/plugin-dialog";
-	import { FolderOpen } from "@lucide/svelte";
+	import OracleClientPicker from "./OracleClientPicker.svelte";
+	import { tns, describeEntry } from "../state/tns.svelte";
 	import {
 		api,
 		asAppError,
@@ -43,6 +44,11 @@
 		error = null;
 	});
 
+	// tnsnames.ora is read once, the first time an Oracle profile is edited.
+	$effect(() => {
+		if (form?.engine === "oracle") tns.load();
+	});
+
 	const isNew = $derived(!form?.id);
 	const open = $derived(form !== null);
 
@@ -53,8 +59,49 @@
 	const oracleTypeItems = [
 		{ value: "service", label: "Service name" },
 		{ value: "sid", label: "SID" },
-		{ value: "custom", label: "Descriptor / TNS" },
+		{ value: "tns", label: "TNS alias" },
+		{ value: "custom", label: "Descriptor" },
 	];
+
+	// Aliases from the chosen Oracle client, or from every discovered one.
+	const tnsEntries = $derived(form?.engine === "oracle" ? tns.entries(form.configDir) : []);
+	const aliasOptions = $derived.by(() => {
+		const opts = tnsEntries.map((e) => ({ value: e.alias, label: `${e.alias} — ${describeEntry(e)}` }));
+		const current = form?.tnsAlias;
+		if (current && !tnsEntries.some((e) => e.alias.toLowerCase() === current.toLowerCase())) {
+			opts.unshift({ value: current, label: `${current} (not in this tnsnames.ora)` });
+		}
+		return opts;
+	});
+	const selectedEntry = $derived(
+		tnsEntries.find((e) => e.alias.toLowerCase() === form?.tnsAlias.toLowerCase()) ?? null,
+	);
+	// Service/SID mode: entries that can fill host, port and service.
+	const fillOptions = $derived(
+		tnsEntries.filter((e) => e.host).map((e) => ({ value: e.alias, label: `${e.alias} — ${describeEntry(e)}` })),
+	);
+
+	function pickAlias(v: string | string[]) {
+		if (!form || typeof v !== "string") return;
+		form.tnsAlias = v;
+		if (!form.name.trim()) form.name = v;
+	}
+
+	/** Copies host, port and service (or SID) from a tnsnames.ora entry. */
+	function fillFrom(v: string | string[]) {
+		const e = tnsEntries.find((x) => x.alias === v);
+		if (!form || !e) return;
+		form.host = e.host ?? form.host;
+		form.port = e.port ?? form.port;
+		if (e.serviceName) {
+			form.oracleConnectType = "service";
+			form.database = e.serviceName;
+		} else if (e.sid) {
+			form.oracleConnectType = "sid";
+			form.database = e.sid;
+		}
+		if (!form.name.trim()) form.name = e.alias;
+	}
 	const sslOptions = [
 		{ value: "disable", label: "Disabled" },
 		{ value: "prefer", label: "Prefer (default)" },
@@ -140,10 +187,6 @@
 		}
 	}
 
-	async function pickConfigDir() {
-		const dir = await openDialog({ directory: true, title: "tnsnames.ora folder (TNS_ADMIN)" });
-		if (form && typeof dir === "string") form.configDir = dir;
-	}
 </script>
 
 {#if form}
@@ -196,28 +239,54 @@
 						/>
 					</div>
 				{/if}
-				{#if form.engine === "oracle" && form.oracleConnectType === "custom"}
+				{#if form.engine === "oracle" && form.oracleConnectType === "tns"}
+					<div class="lq-conn-form__wide">
+						<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
+					</div>
+					<div class="lq-conn-form__wide">
+						<Combobox
+							label="TNS alias"
+							placeholder={tns.loading ? "Reading tnsnames.ora…" : "Choose an alias"}
+							searchPlaceholder="Search aliases"
+							emptyText="No alias found"
+							options={aliasOptions}
+							value={form.tnsAlias}
+							onchange={pickAlias}
+							description={selectedEntry ? describeEntry(selectedEntry) : undefined}
+						/>
+					</div>
+					{#if tns.loaded && tnsEntries.length === 0}
+						<div class="lq-conn-form__wide">
+							<Alert severity="info">
+								No tnsnames.ora found automatically. Set TNS_ADMIN, install an Oracle client or choose its folder with Browse.
+							</Alert>
+						</div>
+					{/if}
+				{:else if form.engine === "oracle" && form.oracleConnectType === "custom"}
 					<div class="lq-conn-form__wide">
 						<TextArea
-							label="Descriptor, Easy Connect or TNS alias"
+							label="Descriptor or Easy Connect"
 							rows={3}
 							placeholder="(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=db.example.com)(PORT=2484))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
 							bind:value={form.connectString}
 						/>
 					</div>
-					<TextField
-						label="TNS_ADMIN folder"
-						description="Required for tnsnames.ora aliases."
-						value={form.configDir ?? ""}
-						oninput={(v) => form && (form.configDir = v || null)}
-					>
-						{#snippet trailing()}
-							<button type="button" class="lq-conn-form__pick" aria-label="Choose folder" onclick={pickConfigDir}>
-								<FolderOpen size={16} />
-							</button>
-						{/snippet}
-					</TextField>
+					<div class="lq-conn-form__wide">
+						<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
+					</div>
 				{:else}
+					{#if form.engine === "oracle" && fillOptions.length > 0}
+						<div class="lq-conn-form__wide">
+							<Combobox
+								label="Fill from tnsnames.ora"
+								placeholder="Optional: pick an alias to copy its host, port and service"
+								searchPlaceholder="Search aliases"
+								emptyText="No alias found"
+								options={fillOptions}
+								onchange={fillFrom}
+							/>
+						</div>
+					{/if}
 					<TextField label="Host" bind:value={form.host} required autocomplete="off" />
 					<NumberField label="Port" bind:value={form.port} min={1} max={65535} />
 					<TextField
@@ -292,17 +361,5 @@
 		color: var(--ca-text-secondary);
 		font-size: var(--ca-font-size-label);
 		font-weight: 500;
-	}
-	.lq-conn-form__pick {
-		display: grid;
-		place-items: center;
-		padding: 4px;
-		border: 0;
-		background: transparent;
-		color: var(--ca-text-secondary);
-		cursor: pointer;
-	}
-	.lq-conn-form__pick:hover {
-		color: var(--ca-text-primary);
 	}
 </style>

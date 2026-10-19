@@ -5,6 +5,7 @@
 	import TabBar from "./lib/components/TabBar.svelte";
 	import QueryView from "./lib/components/QueryView.svelte";
 	import ConnectionDialog from "./lib/components/ConnectionDialog.svelte";
+	import TnsImportDialog from "./lib/components/TnsImportDialog.svelte";
 	import PasswordDialog from "./lib/components/PasswordDialog.svelte";
 	import { workspace } from "./lib/state/workspace.svelte";
 
@@ -116,6 +117,7 @@
 {/if}
 
 <ConnectionDialog />
+<TnsImportDialog />
 <PasswordDialog />
 <Toaster />
 

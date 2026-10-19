@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 
 export type Engine = "postgres" | "oracle";
 export type SslMode = "disable" | "prefer" | "require" | "verify-full";
-export type OracleConnectType = "service" | "sid" | "custom";
+export type OracleConnectType = "service" | "sid" | "tns" | "custom";
 export type OraclePrivilege =
 	| "none"
 	| "sysdba"
@@ -26,6 +26,9 @@ export interface ConnectionProfile {
 	sslMode: SslMode;
 	oracleConnectType: OracleConnectType;
 	connectString: string;
+	/** Alias looked up in tnsnames.ora when `oracleConnectType` is "tns". */
+	tnsAlias: string;
+	/** Folder with tnsnames.ora/sqlnet.ora; null means automatic discovery. */
 	configDir: string | null;
 	oraclePrivilege: OraclePrivilege;
 }
@@ -66,6 +69,27 @@ export interface TxState {
 export interface DbObject {
 	name: string;
 	kind: string;
+}
+
+export interface TnsEntry {
+	alias: string;
+	descriptor: string;
+	host: string | null;
+	port: number | null;
+	serviceName: string | null;
+	sid: string | null;
+	protocol: string | null;
+}
+
+/** A folder with a tnsnames.ora found on this machine or picked by the user. */
+export interface TnsSource {
+	dir: string;
+	/** Oracle home name (OraClient19Home1) or the folder. */
+	label: string;
+	/** TNS_ADMIN, ORACLE_HOME, Oracle home, Instant Client on PATH... */
+	origin: string;
+	entries: TnsEntry[];
+	error: string | null;
 }
 
 export interface DbColumn {
@@ -121,6 +145,7 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		sslMode: "prefer",
 		oracleConnectType: "service",
 		connectString: "",
+		tnsAlias: "",
 		configDir: null,
 		oraclePrivilege: "none",
 	};
@@ -147,6 +172,8 @@ export const api = {
 	listSchemas: (sessionId: string) => invoke<string[]>("list_schemas", { sessionId }),
 	listObjects: (sessionId: string, schema: string) =>
 		invoke<DbObject[]>("list_objects", { sessionId, schema }),
+	oracleTnsSources: () => invoke<TnsSource[]>("oracle_tns_sources"),
+	oracleTnsFolder: (path: string) => invoke<TnsSource>("oracle_tns_folder", { path }),
 	listColumns: (sessionId: string, schema: string, table: string) =>
 		invoke<DbColumn[]>("list_columns", { sessionId, schema, table }),
 };

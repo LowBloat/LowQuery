@@ -35,7 +35,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 - **Native per database.** No ODBC or JDBC layer in the middle. Types, transactions, scripts and errors follow each engine's own rules.
 - **Exact values.** NUMERIC and NUMBER keep every digit, dates keep their precision, and infinite dates, intervals, arrays and ranges show up the way the server writes them.
 - **Large tables are safe to open.** The row limit is applied by the server, so `SELECT *` on a big table does not pull it across the network.
-- **Oracle without the client install.** Connect by service name, SID, full descriptor, Easy Connect or TNS alias, as SYSDBA when needed.
+- **Oracle without the client install, and with yours when you have it.** No Oracle Client is required, yet LowQuery reads the `tnsnames.ora` your machine already uses: from `TNS_ADMIN`, `ORACLE_HOME`, the Oracle homes in the Windows registry or an Instant Client on `PATH`. Pick an alias, import many at once, or connect by service name, SID, descriptor or Easy Connect, as SYSDBA when needed.
 - **Passwords stay in your keychain.** Profiles are a plain JSON file; passwords live in Windows Credential Manager, macOS Keychain or Linux Secret Service.
 - **Errors you can act on.** Native codes (SQLSTATE, ORA-NNNNN), detail and hint, with the failing token underlined in the editor.
 
@@ -73,7 +73,7 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 ### Run your first query
 
 1. Open LowQuery and choose **New connection**.
-2. Pick **PostgreSQL** or **Oracle**, fill in the server and user, and choose **Test connection**.
+2. Pick **PostgreSQL** or **Oracle**, fill in the server and user, and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client; **Import from tnsnames.ora** in the sidebar creates one connection per alias.
 3. Save. The connection appears in the sidebar; expand it to browse schemas, tables and columns.
 4. Type SQL in the editor and press **Ctrl+Enter** (⌘+Enter on macOS) to run the statement under the cursor, or **Ctrl+Shift+Enter** / **F5** to run the whole script.
 
@@ -95,6 +95,7 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 | Values | Binary format decoded per type into server-style text | Per-type formatting for NUMBER, DATE, TIMESTAMP (with time zone), RAW/BLOB, CLOB, JSON, VECTOR and intervals |
 | Server messages | `NOTICE`/`WARNING` | `DBMS_OUTPUT` |
 | Cancel | Server cancel protocol | Not available in the driver yet; scripts stop before the next statement |
+| Network configuration | Host, port and database in the profile | `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or Instant Client on `PATH`, or a folder you pick; `IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported |
 | Encryption | `disable`, `prefer`, `require`, `verify-full` | TLS (TCPS) through a descriptor or Easy Connect string |
 | Scripts | `;`, `$$` and `$tag$` bodies, nested comments, `E''` strings | `;` for SQL, `/` for PL/SQL, `q'[...]'` strings |
 

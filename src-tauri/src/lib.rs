@@ -111,7 +111,13 @@ async fn open_session(
     password: Option<String>,
 ) -> AppResult<SessionInfo> {
     let profile = state.profiles.get(&profile_id)?;
+    let typed = password.clone();
     let session = open_with_password(&profile, password).await?;
+    // A password typed at connect time is kept when the profile saves
+    // passwords, so the next connection does not ask again.
+    if let Some(pw) = typed.filter(|_| profile.save_password) {
+        let _ = profiles::remember_password(&profile.id, &pw);
+    }
     let id = uuid::Uuid::new_v4().to_string();
     let info = SessionInfo {
         session_id: id.clone(),
@@ -194,6 +200,23 @@ async fn list_columns(
         .await
 }
 
+/// Every `tnsnames.ora` found on this machine (TNS_ADMIN, ORACLE_HOME,
+/// registered Oracle homes, clients on PATH).
+#[tauri::command]
+async fn oracle_tns_sources() -> AppResult<Vec<drivers::tns::TnsSource>> {
+    tauri::async_runtime::spawn_blocking(drivers::tns::discover)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// Reads the `tnsnames.ora` in a folder picked by the user.
+#[tauri::command]
+async fn oracle_tns_folder(path: String) -> AppResult<drivers::tns::TnsSource> {
+    tauri::async_runtime::spawn_blocking(move || drivers::tns::read_folder(&path))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
 /// Writes a file the user picked in the "Save as" dialog.
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> AppResult<()> {
@@ -234,6 +257,8 @@ pub fn run() {
             list_objects,
             list_columns,
             write_text_file,
+            oracle_tns_sources,
+            oracle_tns_folder,
         ])
         .run(tauri::generate_context!())
         .expect("error while starting LowQuery");
