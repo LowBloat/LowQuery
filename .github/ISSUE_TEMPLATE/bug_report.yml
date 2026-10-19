@@ -28,6 +28,10 @@ body:
       options:
         - PostgreSQL
         - Oracle
+        - MySQL
+        - MariaDB
+        - SQL Server / Azure SQL
+        - SQLite
         - Not related to a specific database
     validations:
       required: true

@@ -32,6 +32,9 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/postgres.rs` | PostgreSQL session on `tokio-postgres` |
 | `drivers/pg_value.rs` | Binary decoding of PostgreSQL types into server-style text |
 | `drivers/oracle.rs` | Oracle session on the official `oracledb` thin driver |
+| `drivers/mysql.rs` | MySQL and MariaDB session on `mysql_async` |
+| `drivers/sqlserver.rs` | SQL Server and Azure SQL session on `tiberius` (TDS) |
+| `drivers/sqlite.rs` | SQLite session on `rusqlite` (bundled engine) |
 | `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
 | `drivers/integration_tests.rs` | Tests against real servers (`#[ignore]`, see CONTRIBUTING) |
 
@@ -52,10 +55,30 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 - The driver cannot interrupt a running call yet; a script stops before the next statement instead.
 - TNS aliases are resolved by `tns.rs`, not by the driver: it searches the same places an Oracle client does plus clients on `PATH` and the Windows registry, reads Latin-1 files, follows `IFILE` and applies `NAMES.DEFAULT_DOMAIN`. The driver receives the full descriptor and the folder, which it still uses for `sqlnet.ora`.
 
+### MySQL and MariaDB
+
+- Statements use the text protocol, so the server formats every value; binary-charset columns are shown as hex.
+- Row-returning statements run with `sql_select_limit` set to the limit and restored afterwards.
+- Transaction state comes from the server status flags of the last OK packet.
+- Warnings are read with `SHOW WARNINGS`; cancel sends `KILL QUERY` from a short-lived second connection.
+
+### SQL Server
+
+- Each call is one batch (`GO` splits them in the interface), so `#temp` tables, `USE` and `SET` persist.
+- Plain `SELECT`/`WITH` batches run with `SET ROWCOUNT`; others stop reading at the limit.
+- Manual commit mode uses `SET IMPLICIT_TRANSACTIONS ON`, and `@@TRANCOUNT`/`XACT_STATE()` after each call drive the transaction indicator.
+- Cancel sends a TDS attention. The driver does not expose `PRINT` messages yet.
+
+### SQLite
+
+- The connection lives behind a mutex and every call runs in `spawn_blocking`; cancel uses `sqlite3_interrupt`.
+- Manual commit mode opens `BEGIN` before the first statement; the indicator follows `sqlite3_get_autocommit`.
+
 ## Interface side (`src`)
 
 | Path | Responsibility |
 | --- | --- |
+| `lib/engines/` | Engine registry (name, logo, default port, dialect) used by the picker and the sidebar |
 | `theme.ts` | LowBloat theme for CodeAtlas: palette, zero radius, no shadows |
 | `lib/api.ts` | Types and `invoke` wrappers for every command |
 | `lib/sql/split.ts` | Script splitting per dialect: strings, quoted identifiers, nested comments, dollar quotes, `q'[...]'`, PL/SQL blocks |

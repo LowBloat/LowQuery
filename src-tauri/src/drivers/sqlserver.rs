@@ -251,21 +251,24 @@ impl MsSession {
             None => {
                 // The batch future was dropped; the attention tells the server
                 // to stop and drains the rest of the response.
-                let acked = matches!(
-                    tokio::time::timeout(CANCEL_TIMEOUT, client.cancel_query()).await,
-                    Ok(Ok(()))
-                );
-                if acked {
-                    Err(AppError::new(
+                let acked = tokio::time::timeout(CANCEL_TIMEOUT, client.cancel_query()).await;
+                match acked {
+                    Ok(Ok(())) => Err(AppError::new(
                         ErrorKind::Cancelled,
                         "The statement was cancelled.",
-                    ))
-                } else {
-                    self.broken.store(true, Ordering::SeqCst);
-                    Err(AppError::new(
-                        ErrorKind::Cancelled,
-                        "The statement was cancelled, but the connection could not be recovered. Reconnect to continue.",
-                    ))
+                    )),
+                    other => {
+                        self.broken.store(true, Ordering::SeqCst);
+                        let mut err = AppError::new(
+                            ErrorKind::Cancelled,
+                            "The statement was cancelled, but the connection could not be recovered. Reconnect to continue.",
+                        );
+                        err.detail = Some(match other {
+                            Ok(Err(e)) => e.to_string(),
+                            _ => "The server did not acknowledge the cancel in time.".into(),
+                        });
+                        Err(err)
+                    }
                 }
             }
         };
@@ -284,6 +287,15 @@ impl MsSession {
                     let err = self.fail(e, None);
                     if outcome.is_ok() {
                         return Err(err);
+                    }
+                    // Keep the original error, but say why the session broke.
+                    if let Err(original) = &outcome {
+                        if self.broken.load(Ordering::SeqCst) && original.detail.is_none() {
+                            return Err(AppError {
+                                detail: Some(err.message),
+                                ..original.clone()
+                            });
+                        }
                     }
                     None
                 }
@@ -1480,6 +1492,7 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         s.cancel().await.unwrap();
         let err = running.await.unwrap().unwrap_err();
+        eprintln!("cancel result: {err:?}");
         assert_eq!(err.kind, ErrorKind::Cancelled);
         let r = run(&s, "SELECT 2", 0).await.unwrap();
         assert_eq!(r.rows[0][0].as_deref(), Some("2"));

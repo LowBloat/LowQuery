@@ -54,7 +54,7 @@ set -a; source ../.env.test; set +a
 cargo test --lib -- --ignored --test-threads=1
 ```
 
-CI runs the same tests against PostgreSQL 13 and 17 and Oracle Database Free in containers, so a pull request shows whether a change works on both engines. For a bug fix, add a regression test that fails without the fix.
+SQLite tests need no server and always run. CI runs the server tests against PostgreSQL 13 and 17, Oracle Database Free, MySQL 8.4, MariaDB 11.4 and SQL Server 2022 in containers, so a pull request shows whether a change works on every engine. For a bug fix, add a regression test that fails without the fix.
 
 ## Open a pull request
 

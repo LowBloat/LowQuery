@@ -4,6 +4,15 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-19
+
+### Added
+- MySQL and MariaDB through `mysql_async`: server-side row limit with `sql_select_limit`, exact DECIMAL and unsigned values, warnings in the Messages tab, `KILL QUERY` cancel, TLS modes, and `DELIMITER` in scripts.
+- SQL Server and Azure SQL through `tiberius` (TDS): SQL logins or the Windows account, named instances through SQL Server Browser, encryption modes, `GO` batches, `SET ROWCOUNT` limit for plain SELECT batches, attention cancel and implicit transactions for manual commit.
+- SQLite through the bundled engine: open or create a database file, interrupt, extended error codes with positions and trigger bodies in scripts.
+- The new connection dialog starts with a database picker showing each engine's logo, name and driver; connections in the sidebar show the engine logo.
+- Per-engine identifier quoting and preview queries (`LIMIT`, `FETCH FIRST`, `TOP`), and editor dialects for every engine.
+
 ## [0.1.2] - 2026-10-19
 
 ### Added
@@ -42,7 +51,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/LowBloat/LowQuery/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LowBloat/LowQuery/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LowBloat/LowQuery/releases/tag/v0.1.0

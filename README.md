@@ -98,16 +98,15 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 
 ## How it works
 
-| Topic | PostgreSQL | Oracle |
-| --- | --- | --- |
-| Driver | [`tokio-postgres`](https://crates.io/crates/tokio-postgres), extended protocol | [`oracledb`](https://github.com/oracle/rust-oracledb), Oracle's thin driver in pure Rust |
-| Row limit | Portal executed with `max_rows` | `prefetch_rows` and fetch size sized from the limit |
-| Values | Binary format decoded per type into server-style text | Per-type formatting for NUMBER, DATE, TIMESTAMP (with time zone), RAW/BLOB, CLOB, JSON, VECTOR and intervals |
-| Server messages | `NOTICE`/`WARNING` | `DBMS_OUTPUT` |
-| Cancel | Server cancel protocol | Not available in the driver yet; scripts stop before the next statement |
-| Network configuration | Host, port and database in the profile | `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or Instant Client on `PATH`, or a folder you pick; `IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported |
-| Encryption | `disable`, `prefer`, `require`, `verify-full` | TLS (TCPS) through a descriptor or Easy Connect string |
-| Scripts | `;`, `$$` and `$tag$` bodies, nested comments, `E''` strings | `;` for SQL, `/` for PL/SQL, `q'[...]'` strings |
+| Database | Row limit | Values | Server messages | Cancel | Scripts |
+| --- | --- | --- | --- | --- | --- |
+| PostgreSQL | Portal executed with `max_rows` | Binary format decoded per type into server-style text: exact NUMERIC, infinite dates, intervals, arrays, ranges | `NOTICE`, `WARNING` | Server cancel protocol | `;`, `$$` bodies, nested comments, `E''` strings |
+| Oracle | `prefetch_rows` and fetch size sized from the limit | NUMBER, DATE, TIMESTAMP with time zone, RAW/BLOB, CLOB, JSON, VECTOR, intervals | `DBMS_OUTPUT` | Not in the driver yet; scripts stop before the next statement | `;` for SQL, `/` for PL/SQL, `q'[...]'` strings |
+| MySQL, MariaDB | `sql_select_limit` on the server | Text protocol: exact DECIMAL, unsigned BIGINT, zero dates, binary as hex | `SHOW WARNINGS` | `KILL QUERY` from a second connection | `DELIMITER`, `#` comments, backticks, backslash escapes |
+| SQL Server, Azure SQL | `SET ROWCOUNT` for plain SELECT batches | Exact decimal, datetime2 and datetimeoffset precision, uniqueidentifier, binary as hex | Not exposed by the driver yet | TDS attention | `GO` batches, `BEGIN...END` blocks, `[brackets]` |
+| SQLite | Stops stepping at the limit | Storage class and declared type; blobs as hex | — | `sqlite3_interrupt` | Trigger bodies, `[brackets]`, backticks |
+
+**Network configuration.** PostgreSQL, MySQL, MariaDB and SQL Server use host, port and database, with `disable`, `prefer`, `require` or `verify-full` TLS. SQL Server also takes a named instance (found through SQL Server Browser) and can sign in with the Windows account running LowQuery. Oracle reads the `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or an Instant Client on `PATH`, or a folder you pick (`IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported), and accepts TCPS descriptors. SQLite opens or creates a local file.
 
 Connection profiles are stored in `connections.json` in the user configuration folder (`%APPDATA%\LowBloat\LowQuery\config` on Windows, `~/Library/Application Support/dev.LowBloat.LowQuery` on macOS, `~/.config/lowquery` on Linux). Open query tabs and their SQL are restored on the next start.
 
