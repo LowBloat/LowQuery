@@ -423,8 +423,11 @@ fn execute_blocking(
 fn read_dbms_output(conn: &Connection) -> Vec<String> {
     let mut lines = Vec::new();
     while lines.len() < MAX_OUTPUT_LINES {
+        // Positional binds follow the order the placeholders appear in the
+        // text, so :1 (line) must come before :2 (status).
         let exec = conn.execute(
-            "declare l varchar2(32767); begin dbms_output.get_line(l, :2); :1 := substrb(l, 1, 3900); end;",
+            "declare l varchar2(32767); s integer; begin dbms_output.get_line(l, s); \
+             :1 := substrb(l, 1, 3900); :2 := s; end;",
             &[&oracledb::DB_TYPE_VARCHAR, &oracledb::DB_TYPE_NUMBER],
         );
         let Ok(mut exec) = exec else { break };
