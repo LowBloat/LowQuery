@@ -40,6 +40,7 @@
 	} from "@lucide/svelte";
 	import { updates } from "../state/updates.svelte";
 	import { tns } from "../state/tns.svelte";
+	import EngineLogo from "./EngineLogo.svelte";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer, RELATION_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
@@ -87,6 +88,21 @@
 			map.get(o.kind)!.push(o);
 		}
 		return [...map.entries()].sort((a, b) => KIND_ORDER.indexOf(a[0]) - KIND_ORDER.indexOf(b[0]));
+	}
+
+	/** Second line of a connection row: user@target, or the SQLite file name. */
+	function connectionSummary(p: ConnectionProfile): string {
+		if (p.engine === "sqlite") return p.database.split(/[\\/]/).pop() ?? p.database;
+		const target =
+			p.engine === "oracle" && p.oracleConnectType === "tns"
+				? p.tnsAlias
+				: p.engine === "oracle" && p.oracleConnectType === "custom"
+					? "descriptor"
+					: p.instance
+						? `${p.host}\\${p.instance}`
+						: p.host;
+		if (p.engine === "sqlserver" && p.windowsAuth) return `Windows · ${target}`;
+		return `${p.user}@${target}`;
 	}
 
 	function newQuery(p: ConnectionProfile) {
@@ -168,16 +184,12 @@
 							ondblclick={() => newQuery(p)}
 						>
 							<ChevronRight size={14} class="lq-tree__chev {tree?.expanded ? 'lq-tree__chev--open' : ''}" aria-hidden="true" />
-							<span class="lq-tree__engine lq-tree__engine--{p.engine}" title={ENGINE_LABEL[p.engine]}>
-								{p.engine === "postgres" ? "PG" : "ORA"}
+							<span class="lq-tree__engine" title={ENGINE_LABEL[p.engine]}>
+								<EngineLogo engine={p.engine} size={18} />
 							</span>
 							<span class="lq-tree__conn-text">
 								<span class="lq-tree__label">{p.name}</span>
-								<span class="lq-tree__sub">{p.user}@{p.engine === "oracle" && p.oracleConnectType === "tns"
-										? p.tnsAlias
-										: p.engine === "oracle" && p.oracleConnectType === "custom"
-											? "descriptor"
-											: p.host}</span>
+								<span class="lq-tree__sub">{connectionSummary(p)}</span>
 							</span>
 						</button>
 						{#if tree?.loading}
@@ -483,15 +495,13 @@
 		flex-shrink: 0;
 	}
 	.lq-tree__engine {
+		display: grid;
 		flex-shrink: 0;
-		min-width: 30px;
-		padding: 1px 4px;
-		border: 1px solid var(--ca-outline-default);
-		color: var(--ca-text-secondary);
-		font-family: var(--ca-font-mono);
-		font-size: 10px;
-		font-weight: 700;
-		text-align: center;
+		place-items: center;
+		width: 28px;
+		height: 28px;
+		border: 1px solid var(--ca-outline-subtle);
+		background: var(--ca-surface-raised);
 	}
 	.lq-tree__conn-text {
 		display: flex;
@@ -520,13 +530,6 @@
 		font-size: 11px;
 		white-space: nowrap;
 		text-overflow: ellipsis;
-	}
-	.lq-tree__more {
-		display: grid;
-		place-items: center;
-		width: 26px;
-		height: 26px;
-		color: var(--ca-text-secondary);
 	}
 	.lq-tree__action {
 		display: grid;

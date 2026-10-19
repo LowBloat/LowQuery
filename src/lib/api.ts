@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
+import { ENGINES, engineInfo, type Engine } from "./engines";
 
-export type Engine = "postgres" | "oracle";
+export type { Engine } from "./engines";
 export type SslMode = "disable" | "prefer" | "require" | "verify-full";
 export type OracleConnectType = "service" | "sid" | "tns" | "custom";
 export type OraclePrivilege =
@@ -31,6 +32,12 @@ export interface ConnectionProfile {
 	/** Folder with tnsnames.ora/sqlnet.ora; null means automatic discovery. */
 	configDir: string | null;
 	oraclePrivilege: OraclePrivilege;
+	/** SQL Server named instance. */
+	instance: string;
+	/** SQL Server: sign in with the current Windows account. */
+	windowsAuth: boolean;
+	/** SQLite: create the file when it does not exist. */
+	createFile: boolean;
 }
 
 export interface SessionInfo {
@@ -127,9 +134,15 @@ export function errorText(e: AppError): string {
 	return e.code ? `${e.code}: ${e.message}` : e.message;
 }
 
-export const DEFAULT_PORTS: Record<Engine, number> = { postgres: 5432, oracle: 1521 };
+export const ENGINE_LABEL = Object.fromEntries(ENGINES.map((e) => [e.id, e.label])) as Record<Engine, string>;
 
-export const ENGINE_LABEL: Record<Engine, string> = { postgres: "PostgreSQL", oracle: "Oracle" };
+/** Defaults a new profile starts with, per engine. */
+const DEFAULTS: Partial<Record<Engine, { database: string; user: string }>> = {
+	postgres: { database: "postgres", user: "postgres" },
+	mysql: { database: "", user: "root" },
+	mariadb: { database: "", user: "root" },
+	sqlserver: { database: "master", user: "sa" },
+};
 
 export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 	return {
@@ -137,10 +150,10 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		name: "",
 		engine,
 		color: null,
-		host: "localhost",
-		port: DEFAULT_PORTS[engine],
-		database: engine === "postgres" ? "postgres" : "",
-		user: engine === "postgres" ? "postgres" : "",
+		host: engineInfo(engine).file ? "" : "localhost",
+		port: engineInfo(engine).defaultPort ?? 0,
+		database: DEFAULTS[engine]?.database ?? "",
+		user: DEFAULTS[engine]?.user ?? "",
 		savePassword: true,
 		sslMode: "prefer",
 		oracleConnectType: "service",
@@ -148,6 +161,9 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		tnsAlias: "",
 		configDir: null,
 		oraclePrivilege: "none",
+		instance: "",
+		windowsAuth: false,
+		createFile: false,
 	};
 }
 

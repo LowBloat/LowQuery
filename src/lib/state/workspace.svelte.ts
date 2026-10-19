@@ -8,6 +8,7 @@ import {
 	type ExecResult,
 	type SessionInfo,
 } from "../api";
+import { engineInfo } from "../engines";
 import { firstKeywords, splitStatements, statementAt, type SqlStatement } from "../sql/split";
 
 export interface ResultSet {
@@ -319,7 +320,7 @@ export class Workspace {
 			toast.warning("Choose a connection for this tab.");
 			return;
 		}
-		const dialect = profile.engine;
+		const dialect = engineInfo(profile.engine).dialect;
 		let statements: SqlStatement[];
 		if (tab.selection.trim()) {
 			statements = splitStatements(tab.selection, dialect).map((s) => ({

@@ -202,6 +202,12 @@ impl OraSession {
         blocking(move || execute_blocking(&conn, &sql, max_rows, &state)).await
     }
 
+    pub async fn cancel(&self) -> AppResult<()> {
+        Err(AppError::invalid(
+            "The Oracle driver cannot interrupt a running call yet.",
+        ))
+    }
+
     pub async fn set_autocommit(&self, on: bool) -> AppResult<TxState> {
         if on && self.state.lock().in_transaction {
             self.end_transaction(true).await?;

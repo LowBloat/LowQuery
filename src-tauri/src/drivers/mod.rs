@@ -1,8 +1,11 @@
 #[cfg(test)]
 mod integration_tests;
+pub mod mysql;
 pub mod oracle;
 pub mod pg_value;
 pub mod postgres;
+pub mod sqlite;
+pub mod sqlserver;
 pub mod tns;
 
 use crate::error::{AppError, AppResult};
@@ -17,6 +20,13 @@ pub struct TxState {
 
 /// An open connection. Each query tab has its own, so transactions do not
 /// mix across tabs.
+///
+/// Every driver session exposes the same surface, used through [`dispatch!`]:
+/// `server_version`, `current_user` and `current_schema` fields, and
+/// `tx_state`, `execute`, `cancel`, `set_autocommit`, `end_transaction`,
+/// `list_schemas`, `list_objects` and `list_columns` methods with the
+/// signatures used below. Rules every driver follows are in
+/// docs/ARCHITECTURE.md.
 #[allow(
     clippy::large_enum_variant,
     reason = "one per tab, created once and kept behind an Arc; boxing only adds indirection"
@@ -24,6 +34,22 @@ pub struct TxState {
 pub enum Session {
     Postgres(postgres::PgSession),
     Oracle(oracle::OraSession),
+    /// MySQL and MariaDB share the protocol and the driver.
+    Mysql(mysql::MySession),
+    SqlServer(sqlserver::MsSession),
+    Sqlite(sqlite::LiteSession),
+}
+
+macro_rules! dispatch {
+    ($session:expr, $s:ident => $body:expr) => {
+        match $session {
+            Session::Postgres($s) => $body,
+            Session::Oracle($s) => $body,
+            Session::Mysql($s) => $body,
+            Session::SqlServer($s) => $body,
+            Session::Sqlite($s) => $body,
+        }
+    };
 }
 
 impl Session {
@@ -31,6 +57,11 @@ impl Session {
         Ok(match profile.engine {
             Engine::Postgres => Session::Postgres(postgres::connect(profile, password).await?),
             Engine::Oracle => Session::Oracle(oracle::connect(profile, password).await?),
+            Engine::Mysql | Engine::Mariadb => {
+                Session::Mysql(mysql::connect(profile, password).await?)
+            }
+            Engine::Sqlserver => Session::SqlServer(sqlserver::connect(profile, password).await?),
+            Engine::Sqlite => Session::Sqlite(sqlite::connect(profile).await?),
         })
     }
 
@@ -38,89 +69,57 @@ impl Session {
         match self {
             Session::Postgres(_) => Engine::Postgres,
             Session::Oracle(_) => Engine::Oracle,
+            Session::Mysql(s) => s.engine,
+            Session::SqlServer(_) => Engine::Sqlserver,
+            Session::Sqlite(_) => Engine::Sqlite,
         }
     }
 
     pub fn server_version(&self) -> &str {
-        match self {
-            Session::Postgres(s) => &s.server_version,
-            Session::Oracle(s) => &s.server_version,
-        }
+        dispatch!(self, s => &s.server_version)
     }
 
     pub fn current_user(&self) -> Option<String> {
-        match self {
-            Session::Postgres(s) => s.current_user.clone(),
-            Session::Oracle(s) => s.current_user.clone(),
-        }
+        dispatch!(self, s => s.current_user.clone())
     }
 
     pub fn current_schema(&self) -> Option<String> {
-        match self {
-            Session::Postgres(s) => s.current_schema.clone(),
-            Session::Oracle(s) => s.current_schema.clone(),
-        }
+        dispatch!(self, s => s.current_schema.clone())
     }
 
     pub fn tx_state(&self) -> TxState {
-        match self {
-            Session::Postgres(s) => s.tx_state(),
-            Session::Oracle(s) => s.tx_state(),
-        }
+        dispatch!(self, s => s.tx_state())
     }
 
     pub async fn execute(&self, req: &ExecRequest) -> AppResult<ExecResult> {
         if req.sql.trim().is_empty() {
             return Err(AppError::invalid("Nothing to execute."));
         }
-        match self {
-            Session::Postgres(s) => s.execute(req).await,
-            Session::Oracle(s) => s.execute(req).await,
-        }
+        dispatch!(self, s => s.execute(req).await)
     }
 
     pub async fn cancel(&self) -> AppResult<()> {
-        match self {
-            Session::Postgres(s) => s.cancel().await,
-            Session::Oracle(_) => Err(AppError::invalid(
-                "The Oracle driver cannot interrupt a running call yet.",
-            )),
-        }
+        dispatch!(self, s => s.cancel().await)
     }
 
     pub async fn set_autocommit(&self, on: bool) -> AppResult<TxState> {
-        match self {
-            Session::Postgres(s) => s.set_autocommit(on).await,
-            Session::Oracle(s) => s.set_autocommit(on).await,
-        }
+        dispatch!(self, s => s.set_autocommit(on).await)
     }
 
     pub async fn end_transaction(&self, commit: bool) -> AppResult<TxState> {
-        match self {
-            Session::Postgres(s) => s.end_transaction(commit).await,
-            Session::Oracle(s) => s.end_transaction(commit).await,
-        }
+        dispatch!(self, s => s.end_transaction(commit).await)
     }
 
     pub async fn list_schemas(&self) -> AppResult<Vec<String>> {
-        match self {
-            Session::Postgres(s) => s.list_schemas().await,
-            Session::Oracle(s) => s.list_schemas().await,
-        }
+        dispatch!(self, s => s.list_schemas().await)
     }
 
     pub async fn list_objects(&self, schema: &str) -> AppResult<Vec<DbObject>> {
-        match self {
-            Session::Postgres(s) => s.list_objects(schema).await,
-            Session::Oracle(s) => s.list_objects(schema).await,
-        }
+        dispatch!(self, s => s.list_objects(schema).await)
     }
 
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
-        match self {
-            Session::Postgres(s) => s.list_columns(schema, table).await,
-            Session::Oracle(s) => s.list_columns(schema, table).await,
-        }
+        dispatch!(self, s => s.list_columns(schema, table).await)
     }
 }
 

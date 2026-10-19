@@ -35,8 +35,20 @@ impl AppState {
 fn is_auth_failure(e: &AppError) -> bool {
     matches!(
         e.code.as_deref(),
-        Some("28P01" | "28000" | "ORA-01017" | "ORA-01005")
-    ) || e.message.contains("password")
+        Some(
+            "28P01"
+                | "28000"
+                | "ORA-01017"
+                | "ORA-01005"
+                | "1045 (28000)"
+                | "1044 (42000)"
+                | "1698 (28000)"
+        )
+    ) || e
+        .code
+        .as_deref()
+        .is_some_and(|c| c.starts_with("Msg 18456,"))
+        || e.message.contains("password")
 }
 
 /// Resolves the password: the one provided now, the one in the credential
@@ -46,6 +58,12 @@ async fn open_with_password(
     profile: &ConnectionProfile,
     password: Option<String>,
 ) -> AppResult<Session> {
+    // SQLite files and Windows-authenticated SQL Server need no password.
+    let passwordless = profile.engine == model::Engine::Sqlite
+        || (profile.engine == model::Engine::Sqlserver && profile.windows_auth);
+    if passwordless {
+        return Session::open(profile, None).await;
+    }
     let provided = password.is_some();
     let password = match password {
         Some(pw) => Some(pw),

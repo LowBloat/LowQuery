@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 pub enum Engine {
     Postgres,
     Oracle,
+    Mysql,
+    Mariadb,
+    Sqlserver,
+    Sqlite,
 }
 
 /// libpq `sslmode` values that make sense for a desktop client.
@@ -75,7 +79,8 @@ pub struct ConnectionProfile {
     pub color: Option<String>,
     pub host: String,
     pub port: u16,
-    /// PostgreSQL: database. Oracle: service name or SID.
+    /// PostgreSQL, MySQL, SQL Server: database. Oracle: service name or SID.
+    /// SQLite: path of the database file.
     pub database: String,
     pub user: String,
     pub save_password: bool,
@@ -89,6 +94,13 @@ pub struct ConnectionProfile {
     /// on PATH.
     pub config_dir: Option<String>,
     pub oracle_privilege: OraclePrivilege,
+    /// SQL Server named instance (resolved through the SQL Browser service).
+    pub instance: String,
+    /// SQL Server: sign in with the current Windows account instead of a
+    /// SQL login.
+    pub windows_auth: bool,
+    /// SQLite: create the file when it does not exist.
+    pub create_file: bool,
 }
 
 impl Default for ConnectionProfile {
@@ -109,6 +121,9 @@ impl Default for ConnectionProfile {
             tns_alias: String::new(),
             config_dir: None,
             oracle_privilege: OraclePrivilege::default(),
+            instance: String::new(),
+            windows_auth: false,
+            create_file: false,
         }
     }
 }

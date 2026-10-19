@@ -24,7 +24,7 @@ tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
 directories = "6"
@@ -40,6 +40,13 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Oracle: official pure-Rust driver (thin mode), no Oracle Client needed.
 oracledb = "=26.0.0-beta.4"
 # Passwords in the OS credential store.
+# MySQL and MariaDB: native protocol, TLS through rustls.
+mysql_async = { version = "0.37", default-features = false, features = ["default-rustls"] }
+# SQL Server: TDS protocol, TLS through rustls, named instances via SQL Browser.
+tiberius = { version = "0.13", default-features = false, features = ["tds80", "rustls", "sql-browser-tokio", "winauth"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+# SQLite: embedded engine compiled into the app.
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Oracle homes registered by Windows installers.

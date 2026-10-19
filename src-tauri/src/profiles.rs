@@ -109,6 +109,11 @@ fn validate(p: &ConnectionProfile) -> AppResult<()> {
             return Err(AppError::invalid("Choose a TNS alias."));
         }
         Some(OracleConnectType::Custom | OracleConnectType::Tns) => {}
+        _ if p.engine == Engine::Sqlite => {
+            if p.database.trim().is_empty() {
+                return Err(AppError::invalid("Choose the database file."));
+            }
+        }
         _ if p.host.trim().is_empty() => return Err(AppError::invalid("Enter the host.")),
         _ => {}
     }

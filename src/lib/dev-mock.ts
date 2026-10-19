@@ -19,6 +19,17 @@ const profiles: ConnectionProfile[] = [
 		user: "REPORTS",
 		color: "#dc2626",
 	},
+	{ ...emptyProfile("mysql"), id: "my1", name: "Storefront", host: "store-db.internal", database: "store", user: "app" },
+	{
+		...emptyProfile("sqlserver"),
+		id: "ms1",
+		name: "Finance",
+		host: "fin-sql.internal",
+		instance: "REPORTING",
+		database: "Finance",
+		windowsAuth: true,
+	},
+	{ ...emptyProfile("sqlite"), id: "lite1", name: "Local cache", database: String.raw`C:\data\cache.db` },
 ];
 
 // tnsnames.ora entries as the backend reports them (see src-tauri/src/drivers/tns.rs).

@@ -1,13 +1,14 @@
 /**
  * Splits a SQL script into statements following each database's lexical
  * rules: strings, quoted identifiers, comments, PostgreSQL dollar quoting,
- * Oracle q-quoting and PL/SQL blocks terminated by `/`.
+ * Oracle q-quoting and PL/SQL blocks ended by `/`, MySQL `DELIMITER`,
+ * SQL Server `GO` batches and BEGIN...END blocks, and SQLite trigger bodies.
  */
 
-export type Dialect = "postgres" | "oracle";
+export type Dialect = "postgres" | "oracle" | "mysql" | "sqlserver" | "sqlite";
 
 export interface SqlStatement {
-	/** Statement text, without the terminator (`;` or `/`). */
+	/** Statement text, without the terminator (`;`, `/`, `GO` or a custom delimiter). */
 	text: string;
 	/** Start of the text in the document. */
 	start: number;
@@ -18,11 +19,12 @@ export interface SqlStatement {
 }
 
 export interface SplitOptions {
-	/** A blank line also separates statements (outside parentheses and PL/SQL). */
+	/** A blank line also separates statements (outside parentheses and blocks). */
 	blankLineDelimiter?: boolean;
 }
 
 const IDENT = /[A-Za-z0-9_$#]/;
+const WORD_START = /[A-Za-z_]/;
 
 function isIdentChar(c: string | undefined): boolean {
 	return c !== undefined && IDENT.test(c);
@@ -35,12 +37,12 @@ export function firstKeywords(sql: string, n: number): string[] {
 	while (i < sql.length && words.length < n) {
 		const c = sql[i];
 		if (/\s/.test(c)) i++;
-		else if (c === "-" && sql[i + 1] === "-") {
+		else if ((c === "-" && sql[i + 1] === "-") || c === "#") {
 			while (i < sql.length && sql[i] !== "\n") i++;
 		} else if (c === "/" && sql[i + 1] === "*") {
 			const close = sql.indexOf("*/", i + 2);
 			i = close < 0 ? sql.length : close + 2;
-		} else if (/[A-Za-z_]/.test(c)) {
+		} else if (WORD_START.test(c)) {
 			const start = i;
 			while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i++;
 			words.push(sql.slice(start, i).toUpperCase());
@@ -63,7 +65,37 @@ export function isPlsqlStart(sql: string): boolean {
 	);
 }
 
+/** T-SQL modules whose body runs to the end of the batch (`GO`). */
+export function isTsqlModuleStart(sql: string): boolean {
+	const kw = firstKeywords(sql, 4);
+	if (kw[0] !== "CREATE" && kw[0] !== "ALTER") return false;
+	const i = kw[1] === "OR" && kw[2] === "ALTER" ? 3 : 1;
+	return ["PROCEDURE", "PROC", "FUNCTION", "TRIGGER", "VIEW"].includes(kw[i] ?? "");
+}
+
+/** SQLite `CREATE [TEMP] TRIGGER`, whose body holds `;` up to its END. */
+export function isSqliteTriggerStart(sql: string): boolean {
+	const kw = firstKeywords(sql, 3);
+	if (kw[0] !== "CREATE") return false;
+	const i = kw[1] === "TEMP" || kw[1] === "TEMPORARY" ? 2 : 1;
+	return kw[i] === "TRIGGER";
+}
+
 const Q_CLOSE: Record<string, string> = { "[": "]", "(": ")", "{": "}", "<": ">" };
+
+/** Reads a quoted run closed by `close`, where a doubled `close` is an escape. */
+function skipQuoted(sql: string, i: number, close: string, backslash: boolean): number {
+	const n = sql.length;
+	i++;
+	while (i < n) {
+		if (backslash && sql[i] === "\\") i += 2;
+		else if (sql[i] === close) {
+			if (sql[i + 1] === close) i += 2;
+			else return i + 1;
+		} else i++;
+	}
+	return n;
+}
 
 export function splitStatements(
 	sql: string,
@@ -73,8 +105,13 @@ export function splitStatements(
 	const out: SqlStatement[] = [];
 	const n = sql.length;
 	let stmtStart = -1; // first significant character of the current statement
-	let plsql = false;
-	let depth = 0;
+	// "plsql": ends only at "/" (Oracle); "batch": ends only at GO (T-SQL modules).
+	let mode: "normal" | "plsql" | "batch" = "normal";
+	// BEGIN/CASE ... END nesting (T-SQL blocks, SQLite trigger bodies).
+	let blocks = 0;
+	let trackBlocks = false;
+	let parens = 0;
+	let delimiter = ";";
 	let i = 0;
 	let lineStart = 0;
 
@@ -85,15 +122,24 @@ export function splitStatements(
 			if (e > stmtStart) out.push({ text: sql.slice(stmtStart, e), start: stmtStart, end: e, until });
 		}
 		stmtStart = -1;
-		plsql = false;
-		depth = 0;
+		mode = "normal";
+		blocks = 0;
+		trackBlocks = false;
+		parens = 0;
 	};
 
 	const begin = (at: number) => {
-		if (stmtStart < 0) {
-			stmtStart = at;
-			plsql = dialect === "oracle" && isPlsqlStart(sql.slice(at, at + 400));
-		}
+		if (stmtStart >= 0) return;
+		stmtStart = at;
+		const head = sql.slice(at, at + 400);
+		if (dialect === "oracle" && isPlsqlStart(head)) mode = "plsql";
+		else if (dialect === "sqlserver" && isTsqlModuleStart(head)) mode = "batch";
+		trackBlocks = dialect === "sqlserver" || (dialect === "sqlite" && isSqliteTriggerStart(head));
+	};
+
+	const lineEnd = (from: number) => {
+		const e = sql.indexOf("\n", from);
+		return e < 0 ? n : e;
 	};
 
 	while (i < n) {
@@ -104,7 +150,7 @@ export function splitStatements(
 			i++;
 			lineStart = i;
 			// Blank line as a separator.
-			if (options.blankLineDelimiter && stmtStart >= 0 && !plsql && depth === 0) {
+			if (options.blankLineDelimiter && stmtStart >= 0 && mode === "normal" && parens === 0 && blocks === 0) {
 				let j = i;
 				while (j < n && (sql[j] === " " || sql[j] === "\t" || sql[j] === "\r")) j++;
 				if (sql[j] === "\n") push(i - 1, i - 1);
@@ -112,8 +158,10 @@ export function splitStatements(
 			continue;
 		}
 
+		const atLineStart = sql.slice(lineStart, i).trim() === "";
+
 		// A lone "/" on a line ends the statement in Oracle (SQL*Plus style).
-		if (dialect === "oracle" && c === "/" && sql.slice(lineStart, i).trim() === "") {
+		if (dialect === "oracle" && c === "/" && atLineStart) {
 			let j = i + 1;
 			while (j < n && (sql[j] === " " || sql[j] === "\t" || sql[j] === "\r")) j++;
 			if (j >= n || sql[j] === "\n") {
@@ -123,13 +171,35 @@ export function splitStatements(
 			}
 		}
 
+		// SQL Server: "GO" (optionally with a count) on its own line ends the batch.
+		if (dialect === "sqlserver" && atLineStart && (c === "G" || c === "g")) {
+			const end = lineEnd(i);
+			if (/^go(\s+\d+)?\s*(--.*)?$/i.test(sql.slice(i, end).trim())) {
+				push(lineStart, end);
+				i = end;
+				continue;
+			}
+		}
+
+		// MySQL client command: "DELIMITER $$" changes the terminator.
+		if (dialect === "mysql" && atLineStart && stmtStart < 0 && (c === "D" || c === "d")) {
+			const end = lineEnd(i);
+			const m = /^delimiter\s+(\S+)/i.exec(sql.slice(i, end));
+			if (m) {
+				delimiter = m[1];
+				i = end;
+				continue;
+			}
+		}
+
 		if (/\s/.test(c)) {
 			i++;
 			continue;
 		}
 
-		// Line comment.
-		if (c === "-" && next === "-") {
+		// Line comments. MySQL needs whitespace after "--" and also accepts "#".
+		const dashComment = c === "-" && next === "-" && (dialect !== "mysql" || next === undefined || /\s/.test(sql[i + 2] ?? " "));
+		if (dashComment || (dialect === "mysql" && c === "#")) {
 			while (i < n && sql[i] !== "\n") i++;
 			continue;
 		}
@@ -152,6 +222,13 @@ export function splitStatements(
 
 		begin(i);
 
+		// Custom MySQL delimiter (checked before any token it could start with).
+		if (dialect === "mysql" && delimiter !== ";" && sql.startsWith(delimiter, i) && parens === 0) {
+			push(i, i + delimiter.length);
+			i += delimiter.length;
+			continue;
+		}
+
 		// Oracle q-quoting: q'[ ... ]', nq'{ ... }'
 		if (
 			dialect === "oracle" &&
@@ -168,35 +245,28 @@ export function splitStatements(
 			}
 		}
 
-		// String literal. In PostgreSQL, E'...' accepts backslash escapes.
+		// String literal. MySQL always accepts backslash escapes; PostgreSQL only in E'...'.
 		if (c === "'") {
-			const backslash = dialect === "postgres" && (sql[i - 1] === "E" || sql[i - 1] === "e") && !isIdentChar(sql[i - 2]);
-			i++;
-			while (i < n) {
-				if (backslash && sql[i] === "\\") i += 2;
-				else if (sql[i] === "'") {
-					if (sql[i + 1] === "'") i += 2;
-					else {
-						i++;
-						break;
-					}
-				} else i++;
-			}
+			const backslash =
+				dialect === "mysql" ||
+				(dialect === "postgres" && (sql[i - 1] === "E" || sql[i - 1] === "e") && !isIdentChar(sql[i - 2]));
+			i = skipQuoted(sql, i, "'", backslash);
 			continue;
 		}
 
-		// Quoted identifier.
+		// Double quotes: identifier (string with escapes in MySQL).
 		if (c === '"') {
-			i++;
-			while (i < n) {
-				if (sql[i] === '"') {
-					if (sql[i + 1] === '"') i += 2;
-					else {
-						i++;
-						break;
-					}
-				} else i++;
-			}
+			i = skipQuoted(sql, i, '"', dialect === "mysql");
+			continue;
+		}
+
+		// Backtick identifiers (MySQL, SQLite) and [bracket] identifiers (SQL Server, SQLite).
+		if (c === "`" && (dialect === "mysql" || dialect === "sqlite")) {
+			i = skipQuoted(sql, i, "`", false);
+			continue;
+		}
+		if (c === "[" && (dialect === "sqlserver" || dialect === "sqlite")) {
+			i = skipQuoted(sql, i, "]", false);
 			continue;
 		}
 
@@ -211,9 +281,29 @@ export function splitStatements(
 			}
 		}
 
-		if (c === "(") depth++;
-		else if (c === ")") depth = Math.max(0, depth - 1);
-		else if (c === ";" && !plsql) {
+		// Words: BEGIN/CASE/END nesting where `;` can appear inside a block.
+		if (WORD_START.test(c) && !isIdentChar(sql[i - 1])) {
+			let j = i;
+			// A custom delimiter can follow a word directly ("END$$").
+			while (j < n && isIdentChar(sql[j]) && !(delimiter !== ";" && sql.startsWith(delimiter, j))) j++;
+			if (trackBlocks) {
+				const word = sql.slice(i, j).toUpperCase();
+				if (word === "BEGIN") {
+					const after = firstKeywords(sql.slice(j, j + 40), 1)[0] ?? "";
+					const transaction = ["TRAN", "TRANSACTION", "DISTRIBUTED", "DIALOG", "CONVERSATION"].includes(after);
+					// "BEGIN;" alone is a transaction in SQLite and T-SQL.
+					const bare = /^\s*;/.test(sql.slice(j, j + 20));
+					if (!transaction && !bare) blocks++;
+				} else if (word === "CASE") blocks++;
+				else if (word === "END") blocks = Math.max(0, blocks - 1);
+			}
+			i = j;
+			continue;
+		}
+
+		if (c === "(") parens++;
+		else if (c === ")") parens = Math.max(0, parens - 1);
+		else if (c === ";" && delimiter === ";" && mode === "normal" && blocks === 0) {
 			push(i, i + 1);
 			i++;
 			continue;

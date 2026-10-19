@@ -13,20 +13,20 @@
 		FormSection,
 		Combobox,
 	} from "@codeatlasdev/ui";
+	import { FolderOpen, FilePlus2, ArrowLeft, Search } from "@lucide/svelte";
+	import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 	import OracleClientPicker from "./OracleClientPicker.svelte";
+	import EngineLogo from "./EngineLogo.svelte";
 	import { tns, describeEntry } from "../state/tns.svelte";
-	import {
-		api,
-		asAppError,
-		errorText,
-		DEFAULT_PORTS,
-		type ConnectionProfile,
-		type Engine,
-	} from "../api";
+	import { api, asAppError, errorText, emptyProfile, type ConnectionProfile } from "../api";
+	import { ENGINES, engineInfo, type Engine } from "../engines";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer } from "../state/explorer.svelte";
 
 	let form = $state<ConnectionProfile | null>(null);
+	/** "pick": choose the database; "form": connection details. */
+	let step = $state<"pick" | "form">("form");
+	let filter = $state("");
 	let password = $state("");
 	let passwordTouched = $state(false);
 	let testing = $state(false);
@@ -34,10 +34,13 @@
 	let status = $state<{ ok: boolean; text: string } | null>(null);
 	let error = $state<string | null>(null);
 
-	// Copy the profile being edited when the dialog opens.
+	// Copy the profile being edited when the dialog opens. A blank new profile
+	// starts at the database picker; edits and duplicates go to the form.
 	$effect(() => {
 		const p = workspace.editing;
 		form = p ? structuredClone($state.snapshot(p)) : null;
+		step = p && !p.id && !p.name ? "pick" : "form";
+		filter = "";
 		password = "";
 		passwordTouched = false;
 		status = null;
@@ -50,17 +53,23 @@
 	});
 
 	const isNew = $derived(!form?.id);
-	const open = $derived(form !== null);
+	const info = $derived(form ? engineInfo(form.engine) : null);
+	const visibleEngines = $derived(
+		ENGINES.filter((e) => {
+			const q = filter.trim().toLowerCase();
+			return !q || e.label.toLowerCase().includes(q) || e.driver.toLowerCase().includes(q);
+		}),
+	);
 
-	const engineItems = [
-		{ value: "postgres", label: "PostgreSQL" },
-		{ value: "oracle", label: "Oracle" },
-	];
 	const oracleTypeItems = [
 		{ value: "service", label: "Service name" },
 		{ value: "sid", label: "SID" },
 		{ value: "tns", label: "TNS alias" },
 		{ value: "custom", label: "Descriptor" },
+	];
+	const sqlServerAuthItems = [
+		{ value: "sql", label: "SQL Server login" },
+		{ value: "windows", label: "Windows account" },
 	];
 
 	// Aliases from the chosen Oracle client, or from every discovered one.
@@ -80,6 +89,52 @@
 	const fillOptions = $derived(
 		tnsEntries.filter((e) => e.host).map((e) => ({ value: e.alias, label: `${e.alias} — ${describeEntry(e)}` })),
 	);
+
+	/** TLS options; SQL Server calls the same choices "encryption". */
+	const sslOptions = $derived(
+		form?.engine === "sqlserver"
+			? [
+					{ value: "disable", label: "Login only" },
+					{ value: "prefer", label: "Encrypt, trust the server certificate" },
+					{ value: "require", label: "Required, trust the server certificate" },
+					{ value: "verify-full", label: "Required and verify the certificate" },
+				]
+			: [
+					{ value: "disable", label: "Disabled" },
+					{ value: "prefer", label: "Prefer (default)" },
+					{ value: "require", label: "Require, skip certificate check" },
+					{ value: "verify-full", label: "Require and verify certificate" },
+				],
+	);
+	const privilegeOptions = [
+		{ value: "none", label: "Normal" },
+		{ value: "sysdba", label: "SYSDBA" },
+		{ value: "sysoper", label: "SYSOPER" },
+		{ value: "sysbackup", label: "SYSBACKUP" },
+		{ value: "sysdg", label: "SYSDG" },
+		{ value: "syskm", label: "SYSKM" },
+		{ value: "sysrac", label: "SYSRAC" },
+		{ value: "sysasm", label: "SYSASM" },
+	];
+	// Identification colors; red for production, by convention.
+	const colorItems = [
+		{ value: "", label: "No color", color: "transparent" },
+		{ value: "#b8f238", label: "Green", color: "#b8f238" },
+		{ value: "#3b82f6", label: "Blue", color: "#3b82f6" },
+		{ value: "#f59e0b", label: "Amber", color: "#f59e0b" },
+		{ value: "#a855f7", label: "Violet", color: "#a855f7" },
+		{ value: "#dc2626", label: "Red (production)", color: "#dc2626" },
+	];
+
+	/** Picks the database and moves to its connection form with its defaults. */
+	function choose(engine: Engine) {
+		if (!form) return;
+		const keep = { name: form.name, color: form.color, savePassword: form.savePassword };
+		form = { ...emptyProfile(engine), ...keep };
+		step = "form";
+		status = null;
+		error = null;
+	}
 
 	function pickAlias(v: string | string[]) {
 		if (!form || typeof v !== "string") return;
@@ -102,40 +157,30 @@
 		}
 		if (!form.name.trim()) form.name = e.alias;
 	}
-	const sslOptions = [
-		{ value: "disable", label: "Disabled" },
-		{ value: "prefer", label: "Prefer (default)" },
-		{ value: "require", label: "Require, skip certificate check" },
-		{ value: "verify-full", label: "Require and verify certificate" },
-	];
-	const privilegeOptions = [
-		{ value: "none", label: "Normal" },
-		{ value: "sysdba", label: "SYSDBA" },
-		{ value: "sysoper", label: "SYSOPER" },
-		{ value: "sysbackup", label: "SYSBACKUP" },
-		{ value: "sysdg", label: "SYSDG" },
-		{ value: "syskm", label: "SYSKM" },
-		{ value: "sysrac", label: "SYSRAC" },
-		{ value: "sysasm", label: "SYSASM" },
-	];
-	// Identification colors; red for production, by convention.
-	const colorItems = [
-		{ value: "", label: "No color", color: "transparent" },
-		{ value: "#b8f238", label: "Green", color: "#b8f238" },
-		{ value: "#3b82f6", label: "Blue", color: "#3b82f6" },
-		{ value: "#f59e0b", label: "Amber", color: "#f59e0b" },
-		{ value: "#a855f7", label: "Violet", color: "#a855f7" },
-		{ value: "#dc2626", label: "Red (production)", color: "#dc2626" },
+
+	const SQLITE_FILTERS = [
+		{ name: "SQLite database", extensions: ["db", "sqlite", "sqlite3", "db3"] },
+		{ name: "All files", extensions: ["*"] },
 	];
 
-	function setEngine(v: string) {
-		if (!form) return;
-		const engine = v as Engine;
-		if (form.engine === engine) return;
-		if (form.port === DEFAULT_PORTS[form.engine]) form.port = DEFAULT_PORTS[engine];
-		if (engine === "oracle" && form.database === "postgres") form.database = "FREEPDB1";
-		if (engine === "postgres" && !form.database) form.database = "postgres";
-		form.engine = engine;
+	async function browseSqlite() {
+		const path = await openFile({ title: "Open SQLite database", filters: SQLITE_FILTERS });
+		if (!form || typeof path !== "string") return;
+		form.database = path;
+		form.createFile = false;
+		if (!form.name.trim()) form.name = fileName(path);
+	}
+
+	async function newSqlite() {
+		const path = await saveFile({ title: "New SQLite database", defaultPath: "database.db", filters: SQLITE_FILTERS });
+		if (!form || !path) return;
+		form.database = path;
+		form.createFile = true;
+		if (!form.name.trim()) form.name = fileName(path);
+	}
+
+	function fileName(path: string): string {
+		return path.split(/[\\/]/).pop()?.replace(/\.(db|sqlite3?|db3)$/i, "") ?? path;
 	}
 
 	function close() {
@@ -154,8 +199,8 @@
 		status = null;
 		error = null;
 		try {
-			const info = await api.testConnection($state.snapshot(form), pw());
-			status = { ok: true, text: `Connection succeeded · ${info.serverVersion}` };
+			const result = await api.testConnection($state.snapshot(form), pw());
+			status = { ok: true, text: `Connection succeeded · ${result.serverVersion}` };
 		} catch (e) {
 			const err = asAppError(e);
 			status = {
@@ -174,7 +219,9 @@
 		try {
 			const snapshot = $state.snapshot(form);
 			if (!snapshot.name.trim()) {
-				snapshot.name = `${snapshot.user || "user"}@${snapshot.host || "server"}`;
+				snapshot.name = engineInfo(snapshot.engine).file
+					? fileName(snapshot.database)
+					: `${snapshot.user || "user"}@${snapshot.host || "server"}`;
 			}
 			const saved = await workspace.saveProfile(snapshot, snapshot.savePassword ? pw() : null);
 			// Settings changed: the tree reconnects on the next expand.
@@ -187,156 +234,305 @@
 		}
 	}
 
+	const needsCredentials = $derived(
+		!!form && !engineInfo(form.engine).file && !(form.engine === "sqlserver" && form.windowsAuth),
+	);
 </script>
 
-{#if form}
+{#if form && info}
 	<Dialog
-		{open}
+		open={true}
 		size="lg"
-		title={isNew ? "New connection" : `Edit ${form.name}`}
-		description="Passwords are stored in the operating system keychain, never in a file."
+		title={step === "pick" ? "New connection" : isNew ? `New ${info.label} connection` : `Edit ${form.name}`}
+		description={step === "pick"
+			? "Choose the database. Each one connects through its own native driver."
+			: info.file
+				? "The database file stays where it is; LowQuery only keeps its path."
+				: "Passwords are stored in the operating system keychain, never in a file."}
 		onOpenChange={(o) => {
 			if (!o) close();
 		}}
 	>
-		<form
-			class="lq-conn-form"
-			onsubmit={(e) => {
-				e.preventDefault();
-				save();
-			}}
-		>
-			<div class="lq-conn-form__engine">
-				<SegmentedControl
-					aria-label="Database engine"
-					items={engineItems}
-					value={form.engine}
-					onchange={setEngine}
-				/>
+		{#if step === "pick"}
+			<div class="lq-pick">
+				<TextField label="Search" hideLabel placeholder="Search databases" bind:value={filter} autocomplete="off">
+					{#snippet leading()}<Search size={16} />{/snippet}
+				</TextField>
+				<ul class="lq-pick__grid" role="list">
+					{#each visibleEngines as e (e.id)}
+						<li>
+							<button type="button" class="lq-pick__card" onclick={() => choose(e.id)}>
+								<EngineLogo engine={e.id} size={36} />
+								<span class="lq-pick__name">{e.label}</span>
+								<span class="lq-pick__driver">{e.driver}</span>
+							</button>
+						</li>
+					{/each}
+				</ul>
+				{#if visibleEngines.length === 0}
+					<p class="lq-pick__empty">No database matches “{filter}”.</p>
+				{/if}
 			</div>
-
-			<FormSection title="Identification">
-				<TextField label="Name" placeholder="Production · ERP" bind:value={form.name} required />
-				<div class="lq-conn-form__color">
-					<span class="lq-conn-form__label">Color</span>
-					<SwatchGroup
-						aria-label="Identification color"
-						items={colorItems}
-						value={form.color ?? ""}
-						onchange={(v) => form && (form.color = v || null)}
-					/>
-				</div>
-			</FormSection>
-
-			<FormSection title="Server">
-				{#if form.engine === "oracle"}
-					<div class="lq-conn-form__wide">
-						<SegmentedControl
-							aria-label="Oracle connection type"
-							size="sm"
-							items={oracleTypeItems}
-							bind:value={form.oracleConnectType}
-						/>
+		{:else}
+			<form
+				class="lq-conn-form"
+				onsubmit={(e) => {
+					e.preventDefault();
+					save();
+				}}
+			>
+				<div class="lq-conn-form__engine">
+					<EngineLogo engine={form.engine} size={28} />
+					<div>
+						<p class="lq-conn-form__engine-name">{info.label}</p>
+						<p class="lq-conn-form__engine-driver">{info.driver}</p>
 					</div>
-				{/if}
-				{#if form.engine === "oracle" && form.oracleConnectType === "tns"}
-					<div class="lq-conn-form__wide">
-						<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
-					</div>
-					<div class="lq-conn-form__wide">
-						<Combobox
-							label="TNS alias"
-							placeholder={tns.loading ? "Reading tnsnames.ora…" : "Choose an alias"}
-							searchPlaceholder="Search aliases"
-							emptyText="No alias found"
-							options={aliasOptions}
-							value={form.tnsAlias}
-							onchange={pickAlias}
-							description={selectedEntry ? describeEntry(selectedEntry) : undefined}
-						/>
-					</div>
-					{#if tns.loaded && tnsEntries.length === 0}
-						<div class="lq-conn-form__wide">
-							<Alert severity="info">
-								No tnsnames.ora found automatically. Set TNS_ADMIN, install an Oracle client or choose its folder with Browse.
-							</Alert>
-						</div>
+					{#if isNew}
+						<span class="ca-toolbar-spacer"></span>
+						<Button variant="ghost" size="sm" onclick={() => (step = "pick")}>
+							{#snippet leading()}<ArrowLeft size={14} />{/snippet}
+							Change database
+						</Button>
 					{/if}
-				{:else if form.engine === "oracle" && form.oracleConnectType === "custom"}
-					<div class="lq-conn-form__wide">
-						<TextArea
-							label="Descriptor or Easy Connect"
-							rows={3}
-							placeholder="(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=db.example.com)(PORT=2484))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
-							bind:value={form.connectString}
+				</div>
+
+				<FormSection title="Identification">
+					<TextField label="Name" placeholder="Production · ERP" bind:value={form.name} required />
+					<div class="lq-conn-form__color">
+						<span class="lq-conn-form__label">Color</span>
+						<SwatchGroup
+							aria-label="Identification color"
+							items={colorItems}
+							value={form.color ?? ""}
+							onchange={(v) => form && (form.color = v || null)}
 						/>
 					</div>
-					<div class="lq-conn-form__wide">
-						<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
-					</div>
+				</FormSection>
+
+				{#if form.engine === "sqlite"}
+					<FormSection title="Database file">
+						<div class="lq-conn-form__wide lq-conn-form__file">
+							<TextField label="File" placeholder="C:\data\app.db" bind:value={form.database} required />
+							<Button variant="outlined" onclick={browseSqlite}>
+								{#snippet leading()}<FolderOpen size={15} />{/snippet}
+								Open…
+							</Button>
+							<Button variant="outlined" onclick={newSqlite}>
+								{#snippet leading()}<FilePlus2 size={15} />{/snippet}
+								New…
+							</Button>
+						</div>
+						<div class="lq-conn-form__wide">
+							<Switch label="Create the file if it does not exist" bind:checked={form.createFile} />
+						</div>
+					</FormSection>
 				{:else}
-					{#if form.engine === "oracle" && fillOptions.length > 0}
-						<div class="lq-conn-form__wide">
-							<Combobox
-								label="Fill from tnsnames.ora"
-								placeholder="Optional: pick an alias to copy its host, port and service"
-								searchPlaceholder="Search aliases"
-								emptyText="No alias found"
-								options={fillOptions}
-								onchange={fillFrom}
+					<FormSection title="Server">
+						{#if form.engine === "oracle"}
+							<div class="lq-conn-form__wide">
+								<SegmentedControl
+									aria-label="Oracle connection type"
+									size="sm"
+									items={oracleTypeItems}
+									bind:value={form.oracleConnectType}
+								/>
+							</div>
+						{/if}
+
+						{#if form.engine === "oracle" && form.oracleConnectType === "tns"}
+							<div class="lq-conn-form__wide">
+								<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
+							</div>
+							<div class="lq-conn-form__wide">
+								<Combobox
+									label="TNS alias"
+									placeholder={tns.loading ? "Reading tnsnames.ora…" : "Choose an alias"}
+									searchPlaceholder="Search aliases"
+									emptyText="No alias found"
+									options={aliasOptions}
+									value={form.tnsAlias}
+									onchange={pickAlias}
+									description={selectedEntry ? describeEntry(selectedEntry) : undefined}
+								/>
+							</div>
+							{#if tns.loaded && tnsEntries.length === 0}
+								<div class="lq-conn-form__wide">
+									<Alert severity="info">
+										No tnsnames.ora found automatically. Set TNS_ADMIN, install an Oracle client or choose its folder with Browse.
+									</Alert>
+								</div>
+							{/if}
+						{:else if form.engine === "oracle" && form.oracleConnectType === "custom"}
+							<div class="lq-conn-form__wide">
+								<TextArea
+									label="Descriptor or Easy Connect"
+									rows={3}
+									placeholder="(DESCRIPTION=(ADDRESS=(PROTOCOL=TCPS)(HOST=db.example.com)(PORT=2484))(CONNECT_DATA=(SERVICE_NAME=ORCL)))"
+									bind:value={form.connectString}
+								/>
+							</div>
+							<div class="lq-conn-form__wide">
+								<OracleClientPicker value={form.configDir} onchange={(d) => form && (form.configDir = d)} />
+							</div>
+						{:else}
+							{#if form.engine === "oracle" && fillOptions.length > 0}
+								<div class="lq-conn-form__wide">
+									<Combobox
+										label="Fill from tnsnames.ora"
+										placeholder="Optional: pick an alias to copy its host, port and service"
+										searchPlaceholder="Search aliases"
+										emptyText="No alias found"
+										options={fillOptions}
+										onchange={fillFrom}
+									/>
+								</div>
+							{/if}
+							<TextField label="Host" bind:value={form.host} required autocomplete="off" />
+							<NumberField label="Port" bind:value={form.port} min={1} max={65535} />
+							{#if form.engine === "sqlserver"}
+								<TextField
+									label="Instance"
+									placeholder="Optional, e.g. SQLEXPRESS"
+									description="Named instances are found through the SQL Server Browser service."
+									bind:value={form.instance}
+									autocomplete="off"
+								/>
+							{/if}
+							<TextField
+								label={form.engine === "oracle" ? (form.oracleConnectType === "sid" ? "SID" : "Service name") : "Database"}
+								placeholder={form.engine === "oracle"
+									? "FREEPDB1"
+									: form.engine === "mysql" || form.engine === "mariadb"
+										? "Optional"
+										: form.engine === "sqlserver"
+											? "master"
+											: "postgres"}
+								bind:value={form.database}
 							/>
-						</div>
-					{/if}
-					<TextField label="Host" bind:value={form.host} required autocomplete="off" />
-					<NumberField label="Port" bind:value={form.port} min={1} max={65535} />
-					<TextField
-						label={form.engine === "postgres" ? "Database" : form.oracleConnectType === "sid" ? "SID" : "Service name"}
-						placeholder={form.engine === "postgres" ? "postgres" : "FREEPDB1"}
-						bind:value={form.database}
-					/>
-				{/if}
-				{#if form.engine === "postgres"}
-					<Select label="SSL" options={sslOptions} bind:value={form.sslMode} />
-				{/if}
-			</FormSection>
+						{/if}
+						{#if form.engine !== "oracle"}
+							<Select
+								label={form.engine === "sqlserver" ? "Encryption" : "SSL"}
+								options={sslOptions}
+								bind:value={form.sslMode}
+							/>
+						{/if}
+					</FormSection>
 
-			<FormSection title="Authentication">
-				<TextField label="User" bind:value={form.user} autocomplete="off" />
-				<TextField
-					label="Password"
-					type="password"
-					autocomplete="new-password"
-					placeholder={isNew ? "" : "Kept if left blank"}
-					bind:value={password}
-					oninput={() => (passwordTouched = true)}
-				/>
-				{#if form.engine === "oracle"}
-					<Select label="Privilege" options={privilegeOptions} bind:value={form.oraclePrivilege} />
+					<FormSection title="Authentication">
+						{#if form.engine === "sqlserver"}
+							<div class="lq-conn-form__wide">
+								<SegmentedControl
+									aria-label="SQL Server authentication"
+									size="sm"
+									items={sqlServerAuthItems}
+									value={form.windowsAuth ? "windows" : "sql"}
+									onchange={(v) => form && (form.windowsAuth = v === "windows")}
+								/>
+							</div>
+						{/if}
+						{#if needsCredentials}
+							<TextField label="User" bind:value={form.user} autocomplete="off" />
+							<TextField
+								label="Password"
+								type="password"
+								autocomplete="new-password"
+								placeholder={isNew ? "" : "Kept if left blank"}
+								bind:value={password}
+								oninput={() => (passwordTouched = true)}
+							/>
+						{:else}
+							<p class="lq-conn-form__wide lq-conn-form__note">
+								LowQuery signs in as the Windows user running it, like SQL Server Management Studio.
+							</p>
+						{/if}
+						{#if form.engine === "oracle"}
+							<Select label="Privilege" options={privilegeOptions} bind:value={form.oraclePrivilege} />
+						{/if}
+						{#if needsCredentials}
+							<div class="lq-conn-form__wide">
+								<Switch label="Save password in the system keychain" bind:checked={form.savePassword} />
+							</div>
+						{/if}
+					</FormSection>
 				{/if}
-				<div class="lq-conn-form__wide">
-					<Switch label="Save password in the system keychain" bind:checked={form.savePassword} />
-				</div>
-			</FormSection>
 
-			{#if status}
-				<Alert severity={status.ok ? "success" : "error"}>{status.text}</Alert>
-			{/if}
-			{#if error}
-				<Alert severity="error">{error}</Alert>
-			{/if}
-			<button type="submit" hidden aria-hidden="true" tabindex="-1"></button>
-		</form>
+				{#if status}
+					<Alert severity={status.ok ? "success" : "error"}>{status.text}</Alert>
+				{/if}
+				{#if error}
+					<Alert severity="error">{error}</Alert>
+				{/if}
+				<button type="submit" hidden aria-hidden="true" tabindex="-1"></button>
+			</form>
+		{/if}
 
 		{#snippet actions()}
-			<Button variant="ghost" onclick={test} loading={testing}>Test connection</Button>
-			<span class="ca-toolbar-spacer"></span>
-			<Button variant="outlined" onclick={close}>Cancel</Button>
-			<Button variant="filled" onclick={save} loading={saving}>{isNew ? "Create connection" : "Save"}</Button>
+			{#if step === "pick"}
+				<Button variant="outlined" onclick={close}>Cancel</Button>
+			{:else}
+				<Button variant="ghost" onclick={test} loading={testing}>Test connection</Button>
+				<span class="ca-toolbar-spacer"></span>
+				<Button variant="outlined" onclick={close}>Cancel</Button>
+				<Button variant="filled" onclick={save} loading={saving}>{isNew ? "Create connection" : "Save"}</Button>
+			{/if}
 		{/snippet}
 	</Dialog>
 {/if}
 
 <style>
+	.lq-pick {
+		display: flex;
+		flex-direction: column;
+		gap: var(--ca-space-4);
+	}
+	.lq-pick__grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fill, minmax(min(100%, 180px), 1fr));
+		gap: var(--ca-space-3);
+		margin: 0;
+		padding: 0;
+		list-style: none;
+	}
+	.lq-pick__card {
+		display: grid;
+		grid-template-columns: auto minmax(0, 1fr);
+		grid-template-rows: auto auto;
+		align-items: center;
+		column-gap: var(--ca-space-3);
+		width: 100%;
+		height: 100%;
+		padding: var(--ca-space-3) var(--ca-space-4);
+		border: 1px solid var(--ca-outline-default);
+		background: var(--ca-surface-raised);
+		color: var(--ca-text-primary);
+		text-align: left;
+		cursor: pointer;
+	}
+	.lq-pick__card :global(.lq-logo) {
+		grid-row: 1 / span 2;
+	}
+	.lq-pick__card:hover {
+		border-color: var(--ca-brand-main);
+		background: var(--ca-action-hover);
+	}
+	.lq-pick__card:focus-visible {
+		outline: 2px solid var(--ca-focus-ring);
+		outline-offset: 2px;
+	}
+	.lq-pick__name {
+		font-size: 15px;
+		font-weight: 650;
+	}
+	.lq-pick__driver {
+		color: var(--ca-text-secondary);
+		font-size: 12px;
+		line-height: 1.35;
+	}
+	.lq-pick__empty {
+		margin: 0;
+		color: var(--ca-text-secondary);
+	}
 	.lq-conn-form {
 		display: flex;
 		flex-direction: column;
@@ -348,9 +544,33 @@
 	}
 	.lq-conn-form__engine {
 		display: flex;
+		align-items: center;
+		gap: var(--ca-space-3);
+	}
+	.lq-conn-form__engine p {
+		margin: 0;
+	}
+	.lq-conn-form__engine-name {
+		font-size: 15px;
+		font-weight: 650;
+	}
+	.lq-conn-form__engine-driver {
+		color: var(--ca-text-secondary);
+		font-size: 12px;
 	}
 	.lq-conn-form__wide {
 		grid-column: 1 / -1;
+	}
+	.lq-conn-form__file {
+		display: grid;
+		grid-template-columns: minmax(0, 1fr) auto auto;
+		align-items: end;
+		gap: var(--ca-space-2);
+	}
+	.lq-conn-form__note {
+		margin: 0;
+		color: var(--ca-text-secondary);
+		font-size: 13px;
 	}
 	.lq-conn-form__color {
 		display: flex;

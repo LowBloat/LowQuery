@@ -27,7 +27,7 @@
 		completionKeymap,
 	} from "@codemirror/autocomplete";
 	import { highlightSelectionMatches, searchKeymap, search } from "@codemirror/search";
-	import { sql, PostgreSQL, PLSQL, type SQLNamespace } from "@codemirror/lang-sql";
+	import { sql, PostgreSQL, PLSQL, MySQL, MariaSQL, MSSQL, SQLite, type SQLDialect, type SQLNamespace } from "@codemirror/lang-sql";
 	import { tags as t } from "@lezer/highlight";
 	import type { Engine } from "../api";
 	import type { EditorError } from "../state/workspace.svelte";
@@ -123,9 +123,20 @@
 		".cm-placeholder": { color: "var(--ca-text-hint)" },
 	});
 
+	// Keyword sets, quoting and comment rules of each engine for highlighting
+	// and completion.
+	const DIALECTS: Record<Engine, SQLDialect> = {
+		postgres: PostgreSQL,
+		oracle: PLSQL,
+		mysql: MySQL,
+		mariadb: MariaSQL,
+		sqlserver: MSSQL,
+		sqlite: SQLite,
+	};
+
 	function languageFor(e: Engine, ns: SQLNamespace, def?: string): Extension {
 		return sql({
-			dialect: e === "oracle" ? PLSQL : PostgreSQL,
+			dialect: DIALECTS[e] ?? PostgreSQL,
 			schema: ns,
 			defaultSchema: def,
 			upperCaseKeywords: false,

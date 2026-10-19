@@ -68,7 +68,12 @@ async fn one_row(s: &Session, sql: &str) -> Vec<Option<String>> {
 
 #[tokio::test]
 async fn refused_connections_fail_fast() {
-    for engine in [Engine::Postgres, Engine::Oracle] {
+    for engine in [
+        Engine::Postgres,
+        Engine::Oracle,
+        Engine::Mysql,
+        Engine::Sqlserver,
+    ] {
         let profile = ConnectionProfile {
             name: "x".into(),
             engine,

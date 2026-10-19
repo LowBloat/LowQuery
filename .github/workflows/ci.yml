@@ -171,3 +171,87 @@ jobs:
       - run: mkdir -p dist
       - name: Integration tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml oracle -- --ignored --test-threads=1
+
+  mysql:
+    name: ${{ matrix.name }} integration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: MySQL 8.4
+            image: mysql:8.4
+            engine: mysql
+            health: mysqladmin ping -h 127.0.0.1 -plowquery
+          - name: MariaDB 11.4
+            image: mariadb:11.4
+            engine: mariadb
+            health: healthcheck.sh --connect --innodb_initialized
+    services:
+      db:
+        image: ${{ matrix.image }}
+        env:
+          MYSQL_ROOT_PASSWORD: lowquery
+          MYSQL_DATABASE: lowquery
+          MARIADB_ROOT_PASSWORD: lowquery
+          MARIADB_DATABASE: lowquery
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "${{ matrix.health }}" --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      LQ_MYSQL_HOST: 127.0.0.1
+      LQ_MYSQL_PORT: "3306"
+      LQ_MYSQL_USER: root
+      LQ_MYSQL_PASSWORD: lowquery
+      LQ_MYSQL_DB: lowquery
+      LQ_MYSQL_ENGINE: ${{ matrix.engine }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: mysql
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::mysql -- --ignored --test-threads=1
+
+  sqlserver:
+    name: SQL Server 2022 integration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    services:
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: LowQuery-2026!
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -P 'LowQuery-2026!' -Q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 20
+    env:
+      LQ_MSSQL_HOST: 127.0.0.1
+      LQ_MSSQL_PORT: "1433"
+      LQ_MSSQL_USER: sa
+      LQ_MSSQL_PASSWORD: LowQuery-2026!
+      LQ_MSSQL_DB: master
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: sqlserver
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::sqlserver -- --ignored --test-threads=1

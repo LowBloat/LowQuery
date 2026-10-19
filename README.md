@@ -24,7 +24,15 @@
 
 ---
 
-LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It currently supports **PostgreSQL** and **Oracle**, and treats each one as itself: PostgreSQL through its extended protocol with server-side row limits, Oracle through Oracle's official pure-Rust driver with **no Oracle Client or Instant Client to install**. The app is built with Tauri and Rust, so it starts fast and stays small.
+LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It connects to **PostgreSQL, Oracle, MySQL, MariaDB, SQL Server and SQLite**, and treats each one as itself: every engine goes through its own native driver and protocol, with server-side row limits, exact values and the script rules of that engine. Oracle needs **no Oracle Client or Instant Client**. The app is built with Tauri and Rust, so it starts fast and stays small.
+
+| Database | How LowQuery connects |
+| --- | --- |
+| PostgreSQL | Extended protocol with [`tokio-postgres`](https://crates.io/crates/tokio-postgres) |
+| Oracle | [`oracledb`](https://github.com/oracle/rust-oracledb), Oracle's official thin driver in pure Rust |
+| MySQL and MariaDB | Native protocol with [`mysql_async`](https://crates.io/crates/mysql_async) |
+| SQL Server and Azure SQL | TDS protocol with [`tiberius`](https://crates.io/crates/tiberius), SQL logins or Windows accounts |
+| SQLite | Embedded engine ([`rusqlite`](https://crates.io/crates/rusqlite)), opens local database files |
 
 ![LowQuery on Windows with the schema browser, SQL editor and result grid](assets/screenshots/lowquery-desktop.png)
 
@@ -44,8 +52,8 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 | CodeMirror editor with each engine's dialect | Virtualized grid for thousands of rows |
 | Autocompletion from the schema browser | Local sorting, resizable columns, keyboard navigation |
 | Run the statement under the cursor, a selection or the whole script | Value viewer with formatted JSON |
-| PL/SQL blocks with `/`, PostgreSQL `$$` bodies | Copy as TSV, export to CSV or JSON |
-| One session per tab, autocommit or Commit/Rollback | `RAISE NOTICE` and `DBMS_OUTPUT` in the Messages tab |
+| PL/SQL blocks with `/`, PostgreSQL `$$` bodies, MySQL `DELIMITER`, SQL Server `GO` | Copy as TSV, export to CSV or JSON |
+| One session per tab, autocommit or Commit/Rollback | `RAISE NOTICE`, `DBMS_OUTPUT` and MySQL warnings in the Messages tab |
 
 ## Get started
 
@@ -75,7 +83,7 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 ### Run your first query
 
 1. Open LowQuery and choose **New connection**.
-2. Pick **PostgreSQL** or **Oracle**, fill in the server and user, and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client; **Import from tnsnames.ora** in the sidebar creates one connection per alias.
+2. Choose the database by its logo, fill in the server and user (or the file, for SQLite), and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client; **Import from tnsnames.ora** in the sidebar creates one connection per alias.
 3. Save. The connection appears in the sidebar; expand it to browse schemas, tables and columns.
 4. Type SQL in the editor and press **Ctrl+Enter** (⌘+Enter on macOS) to run the statement under the cursor, or **Ctrl+Shift+Enter** / **F5** to run the whole script.
 
