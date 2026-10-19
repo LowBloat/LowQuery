@@ -1,0 +1,52 @@
+{
+  "name": "lowquery",
+  "version": "0.1.0",
+  "description": "LowQuery: a lightweight multi-database SQL client (Oracle and PostgreSQL).",
+  "homepage": "https://github.com/LowBloat/LowQuery",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/LowBloat/LowQuery.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LowBloat/LowQuery/issues"
+  },
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "test": "bun test",
+    "tauri": "tauri",
+    "version:check": "bun scripts/check-version.mjs"
+  },
+  "dependencies": {
+    "@codeatlasdev/ui": "^4.5.0",
+    "@codemirror/autocomplete": "^6.20.4",
+    "@codemirror/commands": "^6.11.1",
+    "@codemirror/lang-sql": "^6.10.0",
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/search": "^6.7.2",
+    "@codemirror/state": "^6.7.6",
+    "@codemirror/view": "^6.43.15",
+    "@fontsource-variable/inter": "^5.3.0",
+    "@lezer/highlight": "^1.2.5",
+    "@lucide/svelte": "^1.59.0",
+    "@tanstack/svelte-table": "^9.3.1",
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.3",
+    "codemirror": "^6.0.2"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "@tauri-apps/cli": "^2.12.3",
+    "@tsconfig/svelte": "^5.0.8",
+    "@types/bun": "^1.4.3",
+    "svelte": "^5.57.2",
+    "svelte-check": "^4.7.7",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4"
+  },
+  "private": true
+}

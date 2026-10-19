@@ -1,0 +1,189 @@
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Engine {
+    Postgres,
+    Oracle,
+}
+
+/// libpq `sslmode` values that make sense for a desktop client.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum SslMode {
+    Disable,
+    #[default]
+    Prefer,
+    Require,
+    VerifyFull,
+}
+
+/// How the Oracle address is built.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OracleConnectType {
+    /// host:port/service_name (Easy Connect).
+    #[default]
+    Service,
+    /// Classic SID, built as a descriptor.
+    Sid,
+    /// Full descriptor, tnsnames.ora alias or Easy Connect Plus.
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OraclePrivilege {
+    #[default]
+    None,
+    Sysdba,
+    Sysoper,
+    Sysbackup,
+    Sysdg,
+    Syskm,
+    Sysrac,
+    Sysasm,
+}
+
+impl OraclePrivilege {
+    /// Protocol `AUTH_MODE_*` values.
+    pub fn auth_mode(self) -> u8 {
+        match self {
+            Self::None => 0x00,
+            Self::Sysasm => 0x01,
+            Self::Sysbackup => 0x02,
+            Self::Sysdba => 0x04,
+            Self::Sysdg => 0x08,
+            Self::Syskm => 0x10,
+            Self::Sysoper => 0x20,
+            Self::Sysrac => 0x40,
+        }
+    }
+}
+
+/// Saved connection profile. The password is never part of the profile: it
+/// lives in the OS credential store when `save_password` is on.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ConnectionProfile {
+    pub id: String,
+    pub name: String,
+    pub engine: Engine,
+    /// Identification color (for example, red for production).
+    pub color: Option<String>,
+    pub host: String,
+    pub port: u16,
+    /// PostgreSQL: database. Oracle: service name or SID.
+    pub database: String,
+    pub user: String,
+    pub save_password: bool,
+    pub ssl_mode: SslMode,
+    pub oracle_connect_type: OracleConnectType,
+    pub connect_string: String,
+    /// Directory with tnsnames.ora / sqlnet.ora (TNS_ADMIN).
+    pub config_dir: Option<String>,
+    pub oracle_privilege: OraclePrivilege,
+}
+
+impl Default for ConnectionProfile {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            engine: Engine::Postgres,
+            color: None,
+            host: "localhost".into(),
+            port: 5432,
+            database: String::new(),
+            user: String::new(),
+            save_password: true,
+            ssl_mode: SslMode::default(),
+            oracle_connect_type: OracleConnectType::default(),
+            connect_string: String::new(),
+            config_dir: None,
+            oracle_privilege: OraclePrivilege::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub session_id: String,
+    pub profile_id: String,
+    pub engine: Engine,
+    pub server_version: String,
+    pub current_user: Option<String>,
+    pub current_schema: Option<String>,
+    pub autocommit: bool,
+}
+
+/// Column category, used by the UI for alignment and formatting.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ValueKind {
+    Number,
+    Text,
+    Bool,
+    Temporal,
+    Binary,
+    Json,
+    Other,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ColumnInfo {
+    pub name: String,
+    /// Type name as the database describes it (`int4`, `VARCHAR2(30)`...).
+    pub type_name: String,
+    pub kind: ValueKind,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecRequest {
+    pub sql: String,
+    /// 0 = no limit.
+    #[serde(default)]
+    pub max_rows: usize,
+}
+
+/// Result of a statement. Values arrive as text already formatted by the
+/// driver: this preserves NUMERIC/NUMBER and date precision without relying
+/// on JavaScript number conversion.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecResult {
+    pub columns: Option<Vec<ColumnInfo>>,
+    pub rows: Vec<Vec<Option<String>>>,
+    pub truncated: bool,
+    pub rows_affected: Option<u64>,
+    pub elapsed_ms: u64,
+    pub notices: Vec<String>,
+    pub in_transaction: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbObject {
+    pub name: String,
+    /// table, view, matview, foreign, sequence, function, procedure, package,
+    /// type, synonym.
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DbColumn {
+    pub name: String,
+    pub type_name: String,
+    pub nullable: bool,
+    pub primary_key: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerInfo {
+    pub server_version: String,
+}

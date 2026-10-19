@@ -1,0 +1,21 @@
+# cargo-deny configuration: `cargo deny --manifest-path src-tauri/Cargo.toml check advisories bans sources`
+# Run weekly and on dependency changes by .github/workflows/security.yml.
+
+[graph]
+all-features = false
+
+[advisories]
+# Known vulnerabilities always fail. Unmaintained notices are reported only for
+# crates we depend on directly; transitive ones (gtk/zbus stacks pulled in by
+# Tauri) are tracked through upstream updates.
+unmaintained = "workspace"
+yanked = "warn"
+ignore = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -1,0 +1,100 @@
+/*
+ * LowQuery adjustments on top of CodeAtlas UI. Unlayered CSS beats the
+ * library's `ca.*` layers without needing !important.
+ */
+
+:root {
+	--lq-active-line: color-mix(in oklab, var(--ca-text-primary) 4%, transparent);
+	--lq-selection: color-mix(in oklab, #b8f238 38%, transparent);
+	--lq-match: color-mix(in oklab, #b8f238 22%, transparent);
+	--lq-bracket: color-mix(in oklab, #b8f238 45%, transparent);
+	--lq-zebra: color-mix(in oklab, var(--ca-text-primary) 2.5%, transparent);
+
+	/* SQL syntax, light theme */
+	--lq-syn-keyword: #3d5c00;
+	--lq-syn-string: #8a4b00;
+	--lq-syn-number: #1f5fa8;
+	--lq-syn-comment: #6b7568;
+	--lq-syn-type: #6d3fa0;
+	--lq-syn-name: #171a17;
+	--lq-syn-punct: #4f584f;
+}
+
+:root.dark {
+	--lq-selection: color-mix(in oklab, #b8f238 26%, transparent);
+	--lq-match: color-mix(in oklab, #b8f238 14%, transparent);
+	--lq-zebra: color-mix(in oklab, var(--ca-text-primary) 3%, transparent);
+
+	--lq-syn-keyword: #c6f45a;
+	--lq-syn-string: #f2c58c;
+	--lq-syn-number: #8cc4ff;
+	--lq-syn-comment: #8a9486;
+	--lq-syn-type: #d2b2f5;
+	--lq-syn-name: #fbfcf8;
+	--lq-syn-punct: #b8c0b0;
+}
+
+html,
+body {
+	height: 100%;
+	margin: 0;
+	overflow: hidden;
+	background: var(--ca-surface-base);
+	color: var(--ca-text-primary);
+	font-family: var(--ca-font-sans);
+	-webkit-font-smoothing: antialiased;
+}
+
+#app {
+	height: 100%;
+}
+
+/* Work app: denser than the website, 14px body text. */
+body {
+	font-size: 14px;
+	line-height: 1.45;
+}
+
+/* Zero radius and no decorative shadows, like the rest of LowBloat. */
+.ca-btn,
+.ca-icon-btn,
+.ca-sel__trigger,
+.ca-tf__wrap,
+.ca-ta__wrap,
+.ca-nf__wrap,
+.ca-chip,
+.ca-dialog,
+.ca-drawer,
+.ca-dropdown-content,
+.ca-popover-content,
+.ca-tooltip-content,
+.ca-alert {
+	border-radius: 0;
+}
+
+.ca-btn--filled {
+	font-weight: 650;
+}
+
+::selection {
+	background: var(--lq-selection);
+}
+
+/* Subtle scrollbars, matching the theme's lines. */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--ca-outline-default) transparent;
+}
+
+/* With mouse/keyboard, compact selects match the small buttons. The 16px
+ * field minimum (iOS zoom) still applies on touch screens. */
+@media (pointer: fine) {
+	.ca-sel--sm .ca-sel__trigger {
+		font-size: 13px;
+	}
+}
+
+/* The sidebar inside the Drawer (narrow screens) fills the whole panel. */
+.lq-drawer .ca-drawer__body {
+	padding: 0;
+}

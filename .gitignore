@@ -1,0 +1,81 @@
+# --- OS and editors ---
+.DS_Store
+Thumbs.db
+desktop.ini
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+# Local AI agent and tooling state (launch configs, permissions, memory)
+.claude/
+.cursor/
+.agents/
+.codex/
+
+# --- Node / Bun ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+bun-debug.log*
+.npm/
+.pnpm-store/
+
+# --- Vite ---
+/dist
+/build
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+.vite/
+
+# --- Tauri / Rust ---
+src-tauri/target/
+src-tauri/gen/
+target/
+**/*.rs.bk
+*.pdb
+
+# --- Tests ---
+coverage/
+playwright-report/
+test-results/
+blob-report/
+
+# --- Environment and secrets ---
+# Integration test credentials live in .env.test; only the template is tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+# Tauri updater signing keys
+*.tauri.key
+# Oracle wallets and local network configuration
+wallet/
+Wallet_*/
+*.sso
+cwallet.*
+ewallet.*
+tnsnames.ora
+sqlnet.ora
+# Saved connection profiles copied out of the app config folder
+connections.json
+
+# --- Downloaded database clients ---
+instantclient*/
+
+# --- Logs and dumps ---
+*.log
+logs/
+*.dump
+*.sql.gz
+
+# --- Release artifacts ---
+/release-assets

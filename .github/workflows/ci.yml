@@ -1,0 +1,172 @@
+name: Verify changes
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "assets/**"
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - "assets/**"
+  workflow_dispatch:
+  # The release workflow reuses these checks before building installers.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  # Cancel superseded pull request runs, but let every push to main finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - name: Cache Bun packages
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: bun-${{ runner.os }}-
+      - run: bun install --frozen-lockfile
+      - run: bun run version:check
+      - run: bun run check
+      - run: bun test
+      - run: bun run build
+      - name: Production bundle has no development mock
+        run: |
+          if grep -rl "installDevMock" dist/assets; then
+            echo "The development mock leaked into the production bundle." >&2
+            exit 1
+          fi
+
+  lint:
+    name: Rust format and lint
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: lint
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      # The Tauri context macro needs the frontend output folder to exist.
+      - run: mkdir -p dist
+      - name: rustfmt
+        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - name: clippy
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib --tests -- -D warnings
+
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libdbus-1-dev
+      - name: Create frontend output folder
+        shell: bash
+        run: mkdir -p dist
+      - name: Rust tests
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml
+
+  postgres:
+    name: PostgreSQL integration (${{ matrix.postgres }})
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["13", "17"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.postgres }}
+        env:
+          POSTGRES_PASSWORD: lowquery
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      LQ_PG_HOST: localhost
+      LQ_PG_PORT: "5432"
+      LQ_PG_USER: postgres
+      LQ_PG_PASSWORD: lowquery
+      LQ_PG_DB: postgres
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: postgres
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml postgres -- --ignored --test-threads=1
+
+  oracle:
+    name: Oracle integration (Free 23ai)
+    runs-on: ubuntu-22.04
+    timeout-minutes: 40
+    services:
+      oracle:
+        image: gvenzl/oracle-free:23-slim-faststart
+        env:
+          ORACLE_PASSWORD: lowquery
+          APP_USER: lowquery
+          APP_USER_PASSWORD: lowquery
+        ports: ["1521:1521"]
+        options: >-
+          --health-cmd healthcheck.sh --health-interval 10s --health-timeout 5s --health-retries 30
+    env:
+      LQ_ORA_HOST: localhost
+      LQ_ORA_PORT: "1521"
+      LQ_ORA_SERVICE: FREEPDB1
+      LQ_ORA_USER: lowquery
+      LQ_ORA_PASSWORD: lowquery
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: oracle
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml oracle -- --ignored --test-threads=1

@@ -1,0 +1,43 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # The Oracle driver is a pinned beta; upgrade it deliberately.
+    ignore:
+      - dependency-name: oracledb
+    groups:
+      tauri:
+        patterns: ["tauri", "tauri-*"]
+      postgres:
+        patterns: ["tokio-postgres", "tokio-postgres-*", "postgres-*"]
+      rust-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      tauri:
+        patterns: ["@tauri-apps/*"]
+      svelte:
+        patterns: ["svelte", "svelte-check", "@sveltejs/*"]
+      codemirror:
+        patterns: ["codemirror", "@codemirror/*", "@lezer/*"]
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]

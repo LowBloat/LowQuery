@@ -1,0 +1,27 @@
+name: Database support
+description: Ask for a new database engine or a missing engine-specific feature.
+title: "[Database]: "
+labels: ["database"]
+body:
+  - type: markdown
+    attributes:
+      value: LowQuery talks to each database through its native protocol and driver. Tell us what you need and how you use that database today.
+  - type: input
+    id: engine
+    attributes:
+      label: Database engine and versions
+      placeholder: "Example: SQL Server 2019 and 2022"
+    validations:
+      required: true
+  - type: textarea
+    id: needs
+    attributes:
+      label: What do you need from it?
+      description: Connection methods (TLS, Kerberos, wallets...), data types, procedural code, metadata or anything that must work the way that engine expects.
+    validations:
+      required: true
+  - type: textarea
+    id: driver
+    attributes:
+      label: Known Rust drivers or protocol notes
+      description: Optional. Links to drivers, protocol documentation or tools that handle this engine well.
