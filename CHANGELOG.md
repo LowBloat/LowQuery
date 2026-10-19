@@ -4,6 +4,14 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-10-19
+
+### Added
+- Automatic updates: installed copies on Windows (setup and MSI), macOS and AppImage check GitHub Releases, download the signed update, install it and restart. Linux packages and portable copies are told a new version exists and get a download link. **Check for updates** sits at the bottom of the sidebar.
+
+### Fixed
+- The SQL editor rendered as plain text in installed builds (line numbers and the placeholder appeared inside the text). Typing could then insert non-breaking spaces, which Oracle rejected with ORA-00911. Tauri's build-time CSP changes blocked the editor's runtime styles.
+
 ## [0.1.1] - 2026-10-19
 
 ### Added
@@ -34,6 +42,7 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/LowBloat/LowQuery/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LowBloat/LowQuery/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/LowBloat/LowQuery/releases/tag/v0.1.0

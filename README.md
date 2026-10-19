@@ -65,6 +65,8 @@ The [latest release](https://github.com/LowBloat/LowQuery/releases/latest) inclu
 gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQuery
 ```
 
+**Updates.** Installed copies on Windows, macOS and AppImage update themselves: LowQuery checks for a new release in the background, shows what changed and installs it when you choose **Install and restart**. Updates are signed and verified before installation. `.deb`, `.rpm` and portable copies are told when a new version is out and link to the download.
+
 **First launch on Windows and macOS.** The installers are not code-signed yet, so the system warns on first launch:
 
 - **Windows:** SmartScreen shows "Windows protected your PC". Choose **More info → Run anyway**.
@@ -114,7 +116,7 @@ bun install
 bun run tauri dev
 ```
 
-`bun run tauri build` produces the installers for your system. To work only on the interface, `bun run dev` serves it at http://localhost:1420 with a development mock backend.
+`bun run tauri build --no-bundle` builds the app for your system. Installers are also signed for the updater, so a full `bun run tauri build` needs the signing key; without it, disable that step with `bun run tauri build -c '{"bundle":{"createUpdaterArtifacts":false}}'`. To work only on the interface, `bun run dev` serves it at http://localhost:1420 with a development mock backend.
 
 ## Roadmap
 

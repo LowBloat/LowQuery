@@ -10,6 +10,7 @@
 		Spinner,
 		EmptyState,
 		Button,
+		toast,
 	} from "@codeatlasdev/ui";
 	import {
 		ChevronRight,
@@ -35,7 +36,9 @@
 		KeyRound,
 		Play,
 		FileInput,
+		ArrowUpCircle,
 	} from "@lucide/svelte";
+	import { updates } from "../state/updates.svelte";
 	import { tns } from "../state/tns.svelte";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
@@ -286,6 +289,34 @@
 			{/each}
 		</ul>
 	</div>
+
+	<footer class="lq-side__footer">
+		{#if updates.available}
+			<button type="button" class="lq-side__update" onclick={() => (updates.dialogOpen = true)}>
+				<ArrowUpCircle size={15} aria-hidden="true" />
+				Update to {updates.available.version}
+			</button>
+		{:else}
+			<span class="lq-side__version">{updates.currentVersion ? `LowQuery ${updates.currentVersion}` : "LowQuery"}</span>
+			<span class="ca-toolbar-spacer"></span>
+			<Tooltip content={updates.error ?? "Check for updates"}>
+				{#snippet triggerChild(props)}<IconButton
+						{...props}
+						size="sm"
+						variant="text"
+						aria-label="Check for updates"
+						loading={updates.checking}
+						onclick={async () => {
+							await updates.check(true);
+							if (!updates.available && !updates.error) toast.success("LowQuery is up to date");
+							if (updates.error) toast.error(`Could not check for updates: ${updates.error}`);
+						}}
+					>
+						<RefreshCw size={14} />
+					</IconButton>{/snippet}
+			</Tooltip>
+		{/if}
+	</footer>
 </nav>
 
 {#if confirmDelete}
@@ -332,6 +363,40 @@
 		font-size: 15px;
 		font-weight: 700;
 		letter-spacing: -0.02em;
+	}
+	.lq-side__footer {
+		display: flex;
+		align-items: center;
+		gap: var(--ca-space-2);
+		min-height: 36px;
+		padding: 0 var(--ca-space-2) 0 var(--ca-space-3);
+		border-top: 1px solid var(--ca-outline-subtle);
+	}
+	.lq-side__version {
+		color: var(--ca-text-hint);
+		font-family: var(--ca-font-mono);
+		font-size: 11px;
+	}
+	.lq-side__update {
+		display: flex;
+		flex: 1;
+		align-items: center;
+		gap: var(--ca-space-2);
+		margin: var(--ca-space-1) 0;
+		padding: 6px var(--ca-space-2);
+		border: 0;
+		background: var(--ca-brand-fill);
+		color: var(--ca-brand-contrast);
+		font-size: 13px;
+		font-weight: 650;
+		cursor: pointer;
+	}
+	.lq-side__update:hover {
+		background: var(--ca-brand-fill-hover);
+	}
+	.lq-side__update:focus-visible {
+		outline: 2px solid var(--ca-focus-ring);
+		outline-offset: 2px;
 	}
 	.lq-side__section {
 		display: flex;

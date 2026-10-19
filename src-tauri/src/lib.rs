@@ -2,6 +2,7 @@ mod drivers;
 mod error;
 mod model;
 mod profiles;
+mod updates;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -235,8 +236,18 @@ pub fn run() {
     let profiles = ProfileStore::new(dirs.config_dir().to_path_buf())
         .expect("could not create the configuration directory");
 
+    let update_policy = updates::UpdatePolicy::detect();
+    let mut updater = tauri_plugin_updater::Builder::new();
+    if let Some(target) = &update_policy.target {
+        updater = updater.target(target);
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(updater.build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_opener::init())
+        .manage(update_policy)
         .manage(AppState {
             profiles,
             sessions: RwLock::new(HashMap::new()),
@@ -259,6 +270,7 @@ pub fn run() {
             write_text_file,
             oracle_tns_sources,
             oracle_tns_folder,
+            updates::update_policy,
         ])
         .run(tauri::generate_context!())
         .expect("error while starting LowQuery");

@@ -27,6 +27,7 @@ We aim to acknowledge reports within 7 days and to agree on a disclosure date on
 - Passwords are stored only in the operating system's credential store (Windows Credential Manager, macOS Keychain, Linux Secret Service), never in `connections.json`, logs or the interface state.
 - The interface never receives a saved password back from the native process.
 - Connections are opened by the native process; the interface runs under a restrictive Content Security Policy and cannot reach the network directly.
+- Updates are signed with a private key held by the maintainers and the release workflow, never in the repository; the app verifies the signature against the public key embedded at build time before installing anything.
 - PostgreSQL `prefer` and `require` encrypt the connection without validating the server certificate, like libpq. Use `verify-full` when the server certificate must be checked.
 
 ## Scope

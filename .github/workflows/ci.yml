@@ -42,6 +42,7 @@ jobs:
       - run: bun run version:check
       - run: bun run check
       - run: bun test
+      - run: python -m unittest discover -s .github/scripts -p "test_*.py"
       - run: bun run build
       - name: Production bundle has no development mock
         run: |
