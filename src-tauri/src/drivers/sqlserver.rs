@@ -48,6 +48,9 @@ const CANNOT_OPEN_DATABASE: u32 = 4060;
 
 pub struct MsSession {
     client: tokio::sync::Mutex<MsClient>,
+    /// Kept to reopen the connection when a cancel cannot be acknowledged.
+    profile: ConnectionProfile,
+    password: Option<String>,
     cancel: tokio::sync::Notify,
     broken: AtomicBool,
     state: Mutex<TxState>,
@@ -57,21 +60,10 @@ pub struct MsSession {
 }
 
 pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> AppResult<MsSession> {
-    let (config, browser) = build_config(profile, password, None)?;
-    let client = match open_client(config, browser).await {
-        // Azure gateways may redirect the login to another node.
-        Err(tiberius::error::Error::Routing { host, port }) => {
-            let (config, _) = build_config(profile, password, Some((host, port)))?;
-            open_client(config, false).await
-        }
-        other => other,
-    };
-    let mut client = client.map_err(connection_error)?;
-
+    let mut client = dial(profile, password).await?;
     let rows = fetch(
         &mut client,
-        "SET TEXTSIZE 2147483647; SET IMPLICIT_TRANSACTIONS OFF;
-         SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)),
+        "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)),
                 CAST(SERVERPROPERTY('EngineEdition') AS int), SUSER_SNAME(), SCHEMA_NAME()",
     )
     .await
@@ -89,6 +81,8 @@ pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> App
         current_user: row.next().flatten(),
         current_schema: row.next().flatten(),
         client: tokio::sync::Mutex::new(client),
+        profile: profile.clone(),
+        password: password.map(str::to_string),
         cancel: tokio::sync::Notify::new(),
         broken: AtomicBool::new(false),
         state: Mutex::new(TxState {
@@ -96,6 +90,27 @@ pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> App
             in_transaction: false,
         }),
     })
+}
+
+/// Opens a connection with the session defaults applied.
+async fn dial(profile: &ConnectionProfile, password: Option<&str>) -> AppResult<MsClient> {
+    let (config, browser) = build_config(profile, password, None)?;
+    let client = match open_client(config, browser).await {
+        // Azure gateways may redirect the login to another node.
+        Err(tiberius::error::Error::Routing { host, port }) => {
+            let (config, _) = build_config(profile, password, Some((host, port)))?;
+            open_client(config, false).await
+        }
+        other => other,
+    };
+    let mut client = client.map_err(connection_error)?;
+    fetch(
+        &mut client,
+        "SET TEXTSIZE 2147483647; SET IMPLICIT_TRANSACTIONS OFF; SELECT 1",
+    )
+    .await
+    .map_err(connection_error)?;
+    Ok(client)
 }
 
 /// Builds the tiberius configuration. Returns whether the port must be
@@ -252,22 +267,35 @@ impl MsSession {
                 // The batch future was dropped; the attention tells the server
                 // to stop and drains the rest of the response.
                 let acked = tokio::time::timeout(CANCEL_TIMEOUT, client.cancel_query()).await;
-                match acked {
-                    Ok(Ok(())) => Err(AppError::new(
+                if matches!(acked, Ok(Ok(()))) {
+                    Err(AppError::new(
                         ErrorKind::Cancelled,
                         "The statement was cancelled.",
-                    )),
-                    other => {
-                        self.broken.store(true, Ordering::SeqCst);
-                        let mut err = AppError::new(
-                            ErrorKind::Cancelled,
-                            "The statement was cancelled, but the connection could not be recovered. Reconnect to continue.",
-                        );
-                        err.detail = Some(match other {
-                            Ok(Err(e)) => e.to_string(),
-                            _ => "The server did not acknowledge the cancel in time.".into(),
-                        });
-                        Err(err)
+                    ))
+                } else {
+                    // The server may send the attention acknowledgement in a
+                    // separate message that the driver does not read, which
+                    // would leave every later response one message behind.
+                    // A fresh connection is the only safe state.
+                    match self.reopen(&mut client).await {
+                        Ok(()) => {
+                            let mut err =
+                                AppError::new(ErrorKind::Cancelled, "The statement was cancelled.");
+                            err.detail = Some(
+                                "LowQuery reopened the connection to finish the cancel: temporary tables, session settings and uncommitted work of this tab were discarded."
+                                    .into(),
+                            );
+                            Err(err)
+                        }
+                        Err(e) => {
+                            self.broken.store(true, Ordering::SeqCst);
+                            let mut err = AppError::new(
+                                ErrorKind::Cancelled,
+                                "The statement was cancelled, but the connection could not be reopened. Reconnect to continue.",
+                            );
+                            err.detail = Some(e.message);
+                            Err(err)
+                        }
                     }
                 }
             }
@@ -502,6 +530,19 @@ impl MsSession {
         fetch(&mut client, &sql)
             .await
             .map_err(|e| self.fail(e, None))
+    }
+
+    /// Replaces the connection with a new one, keeping the autocommit mode.
+    async fn reopen(&self, client: &mut MsClient) -> AppResult<()> {
+        let mut fresh = dial(&self.profile, self.password.as_deref()).await?;
+        if !self.state.lock().autocommit {
+            fetch(&mut fresh, "SET IMPLICIT_TRANSACTIONS ON; SELECT 1")
+                .await
+                .map_err(connection_error)?;
+        }
+        *client = fresh;
+        self.state.lock().in_transaction = false;
+        Ok(())
     }
 
     async fn lock(&self) -> AppResult<tokio::sync::MutexGuard<'_, MsClient>> {
@@ -1492,7 +1533,6 @@ mod tests {
         tokio::time::sleep(Duration::from_secs(1)).await;
         s.cancel().await.unwrap();
         let err = running.await.unwrap().unwrap_err();
-        eprintln!("cancel result: {err:?}");
         assert_eq!(err.kind, ErrorKind::Cancelled);
         let r = run(&s, "SELECT 2", 0).await.unwrap();
         assert_eq!(r.rows[0][0].as_deref(), Some("2"));
