@@ -399,11 +399,19 @@
 								/>
 							{/if}
 							<TextField
-								label={form.engine === "oracle" ? (form.oracleConnectType === "sid" ? "SID" : "Service name") : "Database"}
+								label={form.engine === "oracle"
+									? form.oracleConnectType === "sid"
+										? "SID"
+										: "Service name"
+									: form.engine === "redis"
+										? "Database index"
+										: "Database"}
 								placeholder={form.engine === "oracle"
 									? "FREEPDB1"
 									: form.engine === "mysql" || form.engine === "mariadb"
 										? "Optional"
+										: form.engine === "redis"
+											? "0"
 										: form.engine === "sqlserver"
 											? "master"
 											: "postgres"}
@@ -412,7 +420,7 @@
 						{/if}
 						{#if form.engine !== "oracle"}
 							<Select
-								label={form.engine === "sqlserver" ? "Encryption" : "SSL"}
+								label={form.engine === "sqlserver" ? "Encryption" : form.engine === "redis" ? "TLS" : "SSL"}
 								options={sslOptions}
 								bind:value={form.sslMode}
 							/>
@@ -432,7 +440,12 @@
 							</div>
 						{/if}
 						{#if needsCredentials}
-							<TextField label="User" bind:value={form.user} autocomplete="off" />
+							<TextField
+								label={form.engine === "redis" ? "User (ACL)" : "User"}
+								placeholder={form.engine === "redis" ? "Optional, default user" : ""}
+								bind:value={form.user}
+								autocomplete="off"
+							/>
 							<TextField
 								label="Password"
 								type="password"

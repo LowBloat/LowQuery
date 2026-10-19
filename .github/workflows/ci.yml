@@ -255,3 +255,76 @@ jobs:
       - run: mkdir -p dist
       - name: Integration tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::sqlserver -- --ignored --test-threads=1
+
+  redis:
+    name: ${{ matrix.name }} integration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Redis 7.4
+            image: redis:7.4
+          - name: Valkey 8
+            image: valkey/valkey:8
+    services:
+      kv:
+        image: ${{ matrix.image }}
+        ports: ["6379:6379"]
+    env:
+      LQ_REDIS_HOST: 127.0.0.1
+      LQ_REDIS_PORT: "6379"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: redis
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::redis_db -- --ignored --test-threads=1
+
+  # Builds the native Arch package the release publishes. Manual runs only:
+  # it compiles the whole app, which pull requests do not need.
+  arch-package:
+    name: Arch Linux package
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install system libraries (WebKitGTK)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libdbus-1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libjavascriptcoregtk-4.1-dev libsoup-3.0-dev
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: arch
+      - run: bun install --frozen-lockfile
+      - run: bun run tauri build --no-bundle
+      - name: makepkg in an Arch container
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          arch_build="$PWD/arch-build"
+          mkdir -p "$arch_build"
+          cp src-tauri/target/release/lowquery "$arch_build/lowquery"
+          cp src-tauri/icons/128x128.png "$arch_build/lowquery.png"
+          cp packaging/arch/lowquery.desktop "$arch_build/lowquery.desktop"
+          python3 .github/scripts/render_pkgbuild.py local "$version" "$arch_build"
+          docker run --rm -v "$arch_build":/workspace -w /workspace archlinux:base-devel bash -c "
+            useradd -m builder && chown -R builder:builder /workspace &&
+            su builder -c 'makepkg -f --nodeps' &&
+            pacman -Qip *.pkg.tar.zst && pacman -Qlp *.pkg.tar.zst
+          "

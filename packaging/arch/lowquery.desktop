@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=LowQuery
+Comment=Light SQL client for PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis
+Exec=lowquery
+Icon=lowquery
+Terminal=false
+Type=Application
+Categories=Development;Database;
+Keywords=sql;database;postgresql;oracle;mysql;mariadb;sqlserver;sqlite;redis;
+StartupWMClass=LowQuery

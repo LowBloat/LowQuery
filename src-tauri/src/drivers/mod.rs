@@ -4,6 +4,7 @@ pub mod mysql;
 pub mod oracle;
 pub mod pg_value;
 pub mod postgres;
+pub mod redis_db;
 pub mod sqlite;
 pub mod sqlserver;
 pub mod tns;
@@ -38,6 +39,7 @@ pub enum Session {
     Mysql(mysql::MySession),
     SqlServer(sqlserver::MsSession),
     Sqlite(sqlite::LiteSession),
+    Redis(redis_db::RedisSession),
 }
 
 macro_rules! dispatch {
@@ -48,6 +50,7 @@ macro_rules! dispatch {
             Session::Mysql($s) => $body,
             Session::SqlServer($s) => $body,
             Session::Sqlite($s) => $body,
+            Session::Redis($s) => $body,
         }
     };
 }
@@ -62,6 +65,7 @@ impl Session {
             }
             Engine::Sqlserver => Session::SqlServer(sqlserver::connect(profile, password).await?),
             Engine::Sqlite => Session::Sqlite(sqlite::connect(profile).await?),
+            Engine::Redis => Session::Redis(redis_db::connect(profile, password).await?),
         })
     }
 
@@ -72,6 +76,7 @@ impl Session {
             Session::Mysql(s) => s.engine,
             Session::SqlServer(_) => Engine::Sqlserver,
             Session::Sqlite(_) => Engine::Sqlite,
+            Session::Redis(_) => Engine::Redis,
         }
     }
 

@@ -232,12 +232,13 @@ export class Workspace {
 			tab = tab && !tab.sql.trim() && !tab.running && !tab.session ? tab : this.newTab(profileId);
 			tab.profileId = profileId;
 		}
-		const prefix = tab.sql.trim() ? `${tab.sql.replace(/\s+$/, "")}
-
-` : "";
+		const prefix = tab.sql.trim() ? `${tab.sql.replace(/\s+$/, "")}\n\n` : "";
 		tab.sql = prefix + sql;
 		tab.cursor = prefix.length;
-		tab.selection = "";
+		// Several commands (Redis SELECT + preview) run as a selection, so only
+		// the appended text runs, not the whole document.
+		tab.selection = sql.includes("\n") ? sql : "";
+		tab.selectionFrom = prefix.length;
 		this.activeTabId = tab.id;
 		this.saveDrafts();
 		if (run) await this.run(tab, "statement");

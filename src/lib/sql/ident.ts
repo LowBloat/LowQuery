@@ -28,6 +28,42 @@ export function quoteIdent(name: string, engine: Engine): string {
 			return /^[A-Za-z_][A-Za-z0-9_@#$]*$/.test(name) && !reserved ? name : `[${name.replace(/]/g, "]]")}]`;
 		case "sqlite":
 			return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !reserved ? name : `"${name.replace(/"/g, '""')}"`;
+		case "redis":
+			return redisArg(name);
+	}
+}
+
+/** A redis-cli argument: bare when safe, double-quoted with escapes otherwise. */
+export function redisArg(value: string): string {
+	// Binary key names arrive from the driver already in redis-cli quoted form.
+	if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) return value;
+	if (/^[^\s"'\\]+$/.test(value)) return value;
+	const escaped = value
+		.replace(/[\\"]/g, (c) => `\\${c}`)
+		.replace(/\n/g, "\\n")
+		.replace(/\r/g, "\\r")
+		.replace(/\t/g, "\\t");
+	return `"${escaped}"`;
+}
+
+/** Redis command that shows a key, chosen by its type. */
+export function redisPreview(key: string, kind: string): string {
+	const k = redisArg(key);
+	switch (kind) {
+		case "hash":
+			return `HGETALL ${k}`;
+		case "list":
+			return `LRANGE ${k} 0 199`;
+		case "set":
+			return `SSCAN ${k} 0 COUNT 200`;
+		case "zset":
+			return `ZRANGE ${k} 0 199 WITHSCORES`;
+		case "stream":
+			return `XRANGE ${k} - + COUNT 200`;
+		case "json":
+			return `JSON.GET ${k}`;
+		default:
+			return `GET ${k}`;
 	}
 }
 

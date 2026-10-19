@@ -34,6 +34,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/oracle.rs` | Oracle session on the official `oracledb` thin driver |
 | `drivers/mysql.rs` | MySQL and MariaDB session on `mysql_async` |
 | `drivers/sqlserver.rs` | SQL Server and Azure SQL session on `tiberius` (TDS) |
+| `drivers/redis_db.rs` | Redis and Valkey session on `redis-rs` (RESP3) |
 | `drivers/sqlite.rs` | SQLite session on `rusqlite` (bundled engine) |
 | `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
 | `drivers/integration_tests.rs` | Tests against real servers (`#[ignore]`, see CONTRIBUTING) |
@@ -73,6 +74,13 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 
 - The connection lives behind a mutex and every call runs in `spawn_blocking`; cancel uses `sqlite3_interrupt`.
 - Manual commit mode opens `BEGIN` before the first statement; the indicator follows `sqlite3_get_autocommit`.
+
+### Redis
+
+- Redis is not SQL: each editor line is one redis-cli command, split into arguments with redis-cli quoting rules and sent as is.
+- Replies keep their RESP3 types and are laid out as tables: scalars as one value, maps as field/value, arrays of pairs as columns, `INFO` as section/key/value rows.
+- The tree lists databases (`db0`...) and up to 1000 keys per database with `SCAN` and `TYPE`; ▶ runs the read command that fits the key type.
+- There is no autocommit: `MULTI` opens a queue that the toolbar's EXEC and DISCARD close. Cancel only works for blocking commands, through `CLIENT UNBLOCK` from a second connection.
 
 ## Interface side (`src`)
 

@@ -135,6 +135,21 @@ jobs:
           tar -czf "$portable.tar.gz" -C "$portable" .
           rm -rf "$portable"
 
+          # Native Arch Linux package (pacman -U), built with makepkg in an
+          # Arch container from the binary compiled above.
+          arch_build="$PWD/arch-build"
+          mkdir -p "$arch_build"
+          cp src-tauri/target/release/lowquery "$arch_build/lowquery"
+          cp src-tauri/icons/128x128.png "$arch_build/lowquery.png"
+          cp packaging/arch/lowquery.desktop "$arch_build/lowquery.desktop"
+          python3 .github/scripts/render_pkgbuild.py local "$VERSION" "$arch_build"
+          docker run --rm -v "$arch_build":/workspace -w /workspace archlinux:base-devel bash -c "
+            useradd -m builder && chown -R builder:builder /workspace &&
+            su builder -c 'makepkg -f --nodeps'
+          "
+          cp "$(find "$arch_build" -name '*.pkg.tar.zst' | head -n 1)" "out/LowQuery-${VERSION}-linux-x86_64.pkg.tar.zst"
+          sudo rm -rf "$arch_build"
+
           (cd out && for f in *; do [[ "$f" == *.sig ]] || sha256sum "$f" > "$f.sha256"; done)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -214,6 +229,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.verify.outputs.version }}
         run: python3 .github/scripts/update_manifest.py
+      - name: Write the Arch PKGBUILD (AUR recipe with real checksums)
+        shell: bash
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: python3 .github/scripts/render_pkgbuild.py release "$VERSION" release-assets
       - name: Generate SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -235,6 +255,7 @@ jobs:
           subject-path: |
             release-assets/LowQuery-*
             release-assets/latest.json
+            release-assets/PKGBUILD
             release-assets/SHA256SUMS
       - name: Upload files and publish
         shell: bash

@@ -31,6 +31,11 @@
 		Cog,
 		Package,
 		Shapes,
+		Braces,
+		List,
+		ListOrdered,
+		Boxes,
+		Waves,
 		Link2,
 		Columns3,
 		KeyRound,
@@ -43,8 +48,8 @@
 	import EngineLogo from "./EngineLogo.svelte";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
-	import { explorer, RELATION_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
-	import { previewQuery, qualified, quoteIdent } from "../sql/ident";
+	import { explorer, RELATION_KINDS, REDIS_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
+	import { previewQuery, qualified, quoteIdent, redisArg, redisPreview } from "../sql/ident";
 
 	interface Props {
 		oninsert?: (text: string) => void;
@@ -55,7 +60,10 @@
 
 	let confirmDelete = $state<ConnectionProfile | null>(null);
 
-	const KIND_ORDER = ["table", "view", "matview", "foreign", "sequence", "function", "procedure", "package", "type", "synonym"];
+	const KIND_ORDER = [
+		"table", "view", "matview", "foreign", "sequence", "function", "procedure", "package", "type", "synonym",
+		"string", "hash", "list", "set", "zset", "stream", "json",
+	];
 	const KIND_LABEL: Record<string, string> = {
 		table: "Tables",
 		view: "Views",
@@ -67,6 +75,13 @@
 		package: "Packages",
 		type: "Types",
 		synonym: "Synonyms",
+		string: "Strings",
+		hash: "Hashes",
+		list: "Lists",
+		set: "Sets",
+		zset: "Sorted sets",
+		stream: "Streams",
+		json: "JSON",
 	};
 	const KIND_ICON = {
 		table: Table2,
@@ -79,6 +94,13 @@
 		package: Package,
 		type: Shapes,
 		synonym: Link2,
+		string: KeyRound,
+		hash: Braces,
+		list: List,
+		set: Boxes,
+		zset: ListOrdered,
+		stream: Waves,
+		json: Braces,
 	} as const;
 
 	function groups(objects: ObjectNode[]) {
@@ -115,12 +137,28 @@
 	}
 
 	function preview(p: ConnectionProfile, schema: SchemaNode, obj: ObjectNode) {
-		workspace.openQuery(p.id, previewQuery(schema.name, obj.name, p.engine));
+		if (p.engine === "redis") {
+			// A key in another database needs SELECT first; the tab session
+			// starts in the profile's database.
+			const command = redisPreview(obj.name, obj.kind);
+			const db = `db${p.database.trim() || "0"}`;
+			if (schema.name === db) workspace.openQuery(p.id, command);
+			else workspace.openQuery(p.id, `SELECT ${schema.name.replace(/^db/, "")}\n${command}`);
+		} else {
+			workspace.openQuery(p.id, previewQuery(schema.name, obj.name, p.engine));
+		}
 		onnavigate?.();
 	}
 
+	/** Objects with a ▶ preview: tables and views, or any Redis key. */
+	const previewable = (kind: string) => RELATION_KINDS.has(kind) || REDIS_KINDS.has(kind);
+
 	function insertName(p: ConnectionProfile, schema: SchemaNode, obj: ObjectNode) {
 		const tree = explorer.tree(p.id);
+		if (p.engine === "redis") {
+			oninsert?.(redisArg(obj.name));
+			return;
+		}
 		const name = schema.name === tree?.currentSchema ? quoteIdent(obj.name, p.engine) : qualified(schema.name, obj.name, p.engine);
 		oninsert?.(name.replace(/\(.*\)$/, ""));
 	}
@@ -245,6 +283,9 @@
 											{#if s.objects.length === 0}
 												<p class="lq-tree__hint">No visible objects</p>
 											{/if}
+											{#if p.engine === "redis" && s.objects.length >= 1000}
+												<p class="lq-tree__hint">First 1000 keys. Use SCAN with MATCH in the editor to find others.</p>
+											{/if}
 											<ul class="lq-tree__children" role="list">
 												{#each groups(s.objects) as [kind, items] (kind)}
 													<li class="lq-tree__group">{KIND_LABEL[kind] ?? kind} <span>{items.length}</span></li>
@@ -268,7 +309,7 @@
 																	<Icon size={14} aria-hidden="true" />
 																	<span class="lq-tree__label">{o.name}</span>
 																</button>
-																{#if RELATION_KINDS.has(o.kind)}
+																{#if previewable(o.kind)}
 																	<button type="button" class="lq-tree__action" aria-label="Query {o.name}" title="Query 200 rows" onclick={() => preview(p, s, o)}>
 																		<Play size={13} />
 																	</button>

@@ -6,6 +6,7 @@
 	import { workspace, type QueryTab } from "../state/workspace.svelte";
 	import { explorer } from "../state/explorer.svelte";
 	import { ENGINE_LABEL } from "../api";
+	import { engineInfo } from "../engines";
 
 	interface Props {
 		tab: QueryTab;
@@ -19,6 +20,8 @@
 
 	const profile = $derived(workspace.profile(tab.profileId));
 	const engine = $derived(profile?.engine ?? "postgres");
+	/** Redis: commands instead of SQL, MULTI/EXEC instead of autocommit. */
+	const keyValue = $derived(engineInfo(engine).keyValue === true);
 	const completion = $derived(explorer.completion(tab.profileId));
 
 	const connectionOptions = $derived([
@@ -124,27 +127,29 @@
 		</div>
 
 		<div class="lq-toolbar__group">
-			<Switch
-				label="Autocommit"
-				checked={tab.autocommit}
-				onchange={(on) => workspace.setAutocommit(tab, on)}
-			/>
+			{#if !keyValue}
+				<Switch
+					label="Autocommit"
+					checked={tab.autocommit}
+					onchange={(on) => workspace.setAutocommit(tab, on)}
+				/>
+			{/if}
 			{#if !tab.autocommit || tab.inTransaction}
-				<Tooltip content="Commit transaction">
+				<Tooltip content={keyValue ? "Run the queued commands (EXEC)" : "Commit transaction"}>
 					{#snippet triggerChild(props)}<Button {...props} size="sm" variant="outlined" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, true)}>
 						{#snippet leading()}<Check size={14} />{/snippet}
-						Commit
+						{keyValue ? "EXEC" : "Commit"}
 					</Button>{/snippet}
 				</Tooltip>
-				<Tooltip content="Roll back transaction">
+				<Tooltip content={keyValue ? "Drop the queued commands (DISCARD)" : "Roll back transaction"}>
 					{#snippet triggerChild(props)}<Button {...props} size="sm" variant="ghost" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, false)}>
 						{#snippet leading()}<Undo2 size={14} />{/snippet}
-						Rollback
+						{keyValue ? "DISCARD" : "Rollback"}
 					</Button>{/snippet}
 				</Tooltip>
 			{/if}
 			{#if tab.inTransaction}
-				<Chip label="Open transaction" variant="warning" size="sm" />
+				<Chip label={keyValue ? "MULTI open" : "Open transaction"} variant="warning" size="sm" />
 			{/if}
 		</div>
 

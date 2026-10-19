@@ -1,6 +1,6 @@
-import { MARIADB_PATH, MYSQL_PATH, POSTGRESQL_PATH, SQLITE_PATH } from "./logos";
+import { MARIADB_PATH, MYSQL_PATH, POSTGRESQL_PATH, REDIS_PATH, SQLITE_PATH } from "./logos";
 
-export type Engine = "postgres" | "oracle" | "mysql" | "mariadb" | "sqlserver" | "sqlite";
+export type Engine = "postgres" | "oracle" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "redis";
 
 /** Lexical rules used to split scripts. */
 export type { Dialect } from "../sql/split";
@@ -21,6 +21,8 @@ export interface EngineInfo {
 	dialect: Dialect;
 	/** Short badge text shown where a logo does not fit. */
 	short: string;
+	/** Key-value store: commands instead of SQL, keys instead of tables. */
+	keyValue?: boolean;
 }
 
 export const ENGINES: EngineInfo[] = [
@@ -89,6 +91,18 @@ export const ENGINES: EngineInfo[] = [
 		file: true,
 		dialect: "sqlite",
 		short: "LITE",
+	},
+	{
+		id: "redis",
+		label: "Redis",
+		driver: "RESP3 protocol (redis-rs), Valkey included",
+		color: "#FF4438",
+		logo: { path: REDIS_PATH },
+		defaultPort: 6379,
+		file: false,
+		dialect: "redis",
+		short: "RDS",
+		keyValue: true,
 	},
 ];
 

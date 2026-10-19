@@ -24,7 +24,7 @@
 
 ---
 
-LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It connects to **PostgreSQL, Oracle, MySQL, MariaDB, SQL Server and SQLite**, and treats each one as itself: every engine goes through its own native driver and protocol, with server-side row limits, exact values and the script rules of that engine. Oracle needs **no Oracle Client or Instant Client**. The app is built with Tauri and Rust, so it starts fast and stays small.
+LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It connects to **PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis**, and treats each one as itself: every engine goes through its own native driver and protocol, with server-side row limits, exact values and the script rules of that engine. Oracle needs **no Oracle Client or Instant Client**. The app is built with Tauri and Rust, so it starts fast and stays small.
 
 | Database | How LowQuery connects |
 | --- | --- |
@@ -33,6 +33,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 | MySQL and MariaDB | Native protocol with [`mysql_async`](https://crates.io/crates/mysql_async) |
 | SQL Server and Azure SQL | TDS protocol with [`tiberius`](https://crates.io/crates/tiberius), SQL logins or Windows accounts |
 | SQLite | Embedded engine ([`rusqlite`](https://crates.io/crates/rusqlite)), opens local database files |
+| Redis and Valkey | RESP3 with [`redis-rs`](https://crates.io/crates/redis): redis-cli commands, results as tables, keys browsed by type |
 
 ![LowQuery on Windows with the schema browser, SQL editor and result grid](assets/screenshots/lowquery-desktop.png)
 
@@ -64,8 +65,10 @@ The [latest release](https://github.com/LowBloat/LowQuery/releases/latest) inclu
 | Platform | Available formats |
 | --- | --- |
 | Windows x64 | Setup `.exe`, `.msi`, portable `.zip` |
-| Linux x64 | `.AppImage`, `.deb`, `.rpm`, portable `.tar.gz` |
+| Linux x64 | `.AppImage`, `.deb`, `.rpm`, Arch `.pkg.tar.zst`, portable `.tar.gz` |
 | macOS (Apple Silicon and Intel) | Universal `.dmg` |
+
+**Arch Linux, Omarchy and other Arch-based systems.** Install the native package with `sudo pacman -U LowQuery-<version>-linux-x86_64.pkg.tar.zst`. Each release also publishes a `PKGBUILD` with real checksums that builds the same package from the portable archive with `makepkg -si`.
 
 **Verify a download.** Each release has `.sha256` files, a `SHA256SUMS` file, an SPDX software bill of materials (`*-sbom.spdx.json`) and GitHub build provenance attestations. With the [GitHub CLI](https://cli.github.com/):
 
@@ -105,8 +108,9 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 | MySQL, MariaDB | `sql_select_limit` on the server | Text protocol: exact DECIMAL, unsigned BIGINT, zero dates, binary as hex | `SHOW WARNINGS` | `KILL QUERY` from a second connection | `DELIMITER`, `#` comments, backticks, backslash escapes |
 | SQL Server, Azure SQL | `SET ROWCOUNT` for plain SELECT batches | Exact decimal, datetime2 and datetimeoffset precision, uniqueidentifier, binary as hex | Not exposed by the driver yet | TDS attention | `GO` batches, `BEGIN...END` blocks, `[brackets]` |
 | SQLite | Stops stepping at the limit | Storage class and declared type; blobs as hex | — | `sqlite3_interrupt` | Trigger bodies, `[brackets]`, backticks |
+| Redis, Valkey | Long replies cut at the limit; the tree uses `SCAN` | RESP3 types: maps as field/value, `WITHSCORES` as member/score, `INFO` as rows | — | `CLIENT UNBLOCK` for blocking commands | One redis-cli command per line, `#` comments |
 
-**Network configuration.** PostgreSQL, MySQL, MariaDB and SQL Server use host, port and database, with `disable`, `prefer`, `require` or `verify-full` TLS. SQL Server also takes a named instance (found through SQL Server Browser) and can sign in with the Windows account running LowQuery. Oracle reads the `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or an Instant Client on `PATH`, or a folder you pick (`IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported), and accepts TCPS descriptors. SQLite opens or creates a local file.
+**Network configuration.** PostgreSQL, MySQL, MariaDB and SQL Server use host, port and database, with `disable`, `prefer`, `require` or `verify-full` TLS. SQL Server also takes a named instance (found through SQL Server Browser) and can sign in with the Windows account running LowQuery. Oracle reads the `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or an Instant Client on `PATH`, or a folder you pick (`IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported), and accepts TCPS descriptors. SQLite opens or creates a local file. Redis takes host, port, an optional ACL user and the database index.
 
 Connection profiles are stored in `connections.json` in the user configuration folder (`%APPDATA%\LowBloat\LowQuery\config` on Windows, `~/Library/Application Support/dev.LowBloat.LowQuery` on macOS, `~/.config/lowquery` on Linux). Open query tabs and their SQL are restored on the next start.
 

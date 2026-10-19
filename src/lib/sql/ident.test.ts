@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { previewQuery, quoteIdent } from "./ident";
+import { previewQuery, quoteIdent, redisArg, redisPreview } from "./ident";
 
 describe("quoteIdent", () => {
 	it("PostgreSQL quotes uppercase names and reserved words", () => {
@@ -34,5 +34,15 @@ describe("previewQuery", () => {
 		expect(previewQuery("dbo", "Orders", "sqlserver")).toBe("SELECT TOP 200 * FROM dbo.Orders");
 		expect(previewQuery("shop", "orders", "mysql")).toBe("SELECT * FROM shop.orders LIMIT 200");
 		expect(previewQuery("main", "t", "sqlite")).toBe("SELECT * FROM main.t LIMIT 200");
+	});
+});
+
+describe("Redis arguments", () => {
+	it("quotes keys like redis-cli", () => {
+		expect(redisArg("user:1")).toBe("user:1");
+		expect(redisArg("a b")).toBe('"a b"');
+		expect(redisArg('say "hi"\n')).toBe(String.raw`"say \"hi\"\n"`);
+		expect(redisPreview("orders", "zset")).toBe("ZRANGE orders 0 199 WITHSCORES");
+		expect(redisPreview("cfg", "string")).toBe("GET cfg");
 	});
 });

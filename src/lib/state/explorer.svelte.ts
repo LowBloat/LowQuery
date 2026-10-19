@@ -29,6 +29,9 @@ export interface ProfileTree {
 /** Objects with columns to expand. */
 export const RELATION_KINDS = new Set(["table", "view", "matview", "foreign"]);
 
+/** Redis key types, listed by the tree and previewed with their own command. */
+export const REDIS_KINDS = new Set(["string", "hash", "list", "set", "zset", "stream", "json"]);
+
 /**
  * Schema browser. Each expanded connection uses its own session, separate
  * from the tabs, so it does not compete with running queries.
@@ -157,7 +160,9 @@ class Explorer {
 			if (!s.objects) continue;
 			const tables: Record<string, string[]> = {};
 			for (const o of s.objects) {
-				if (RELATION_KINDS.has(o.kind)) tables[o.name] = o.columns?.map((c) => c.name) ?? [];
+				if (RELATION_KINDS.has(o.kind) || REDIS_KINDS.has(o.kind)) {
+					tables[o.name] = o.columns?.map((c) => c.name) ?? [];
+				}
 			}
 			schema[s.name] = tables;
 		}

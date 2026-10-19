@@ -30,6 +30,7 @@
 	import { sql, PostgreSQL, PLSQL, MySQL, MariaSQL, MSSQL, SQLite, type SQLDialect, type SQLNamespace } from "@codemirror/lang-sql";
 	import { tags as t } from "@lezer/highlight";
 	import type { Engine } from "../api";
+	import { redisSupport } from "../engines/redis-language";
 	import type { EditorError } from "../state/workspace.svelte";
 
 	interface Props {
@@ -132,9 +133,15 @@
 		mariadb: MariaSQL,
 		sqlserver: MSSQL,
 		sqlite: SQLite,
+		redis: PostgreSQL,
 	};
 
 	function languageFor(e: Engine, ns: SQLNamespace, def?: string): Extension {
+		if (e === "redis") {
+			// Keys loaded in the tree, from every database.
+			const keys = Object.values(ns as Record<string, Record<string, unknown>>).flatMap((db) => Object.keys(db ?? {}));
+			return redisSupport(keys);
+		}
 		return sql({
 			dialect: DIALECTS[e] ?? PostgreSQL,
 			schema: ns,

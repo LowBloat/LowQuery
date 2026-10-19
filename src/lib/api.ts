@@ -142,6 +142,7 @@ const DEFAULTS: Partial<Record<Engine, { database: string; user: string }>> = {
 	mysql: { database: "", user: "root" },
 	mariadb: { database: "", user: "root" },
 	sqlserver: { database: "master", user: "sa" },
+	redis: { database: "0", user: "" },
 };
 
 export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {

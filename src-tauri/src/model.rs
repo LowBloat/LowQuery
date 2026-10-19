@@ -9,6 +9,7 @@ pub enum Engine {
     Mariadb,
     Sqlserver,
     Sqlite,
+    Redis,
 }
 
 /// libpq `sslmode` values that make sense for a desktop client.
@@ -80,7 +81,7 @@ pub struct ConnectionProfile {
     pub host: String,
     pub port: u16,
     /// PostgreSQL, MySQL, SQL Server: database. Oracle: service name or SID.
-    /// SQLite: path of the database file.
+    /// SQLite: path of the database file. Redis: logical database index.
     pub database: String,
     pub user: String,
     pub save_password: bool,

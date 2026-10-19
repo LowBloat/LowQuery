@@ -166,3 +166,12 @@ describe("SQLite", () => {
 		]);
 	});
 });
+
+describe("Redis", () => {
+	it("runs one command per line and skips comments", () => {
+		const sql = '# cache keys\nSET "a b" "x; y"\n\n  HGETALL user:1  \n// done\n';
+		const list = splitStatements(sql, "redis");
+		expect(list.map((s) => s.text)).toEqual(['SET "a b" "x; y"', "HGETALL user:1"]);
+		expect(sql.slice(list[1].start, list[1].end)).toBe("HGETALL user:1");
+	});
+});

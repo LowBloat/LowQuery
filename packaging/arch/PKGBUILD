@@ -1,0 +1,27 @@
+# Maintainer: LowBloat <contato@fabioharaujo.com.br>
+# Template: each release publishes a rendered PKGBUILD asset with the real
+# version and checksums (see .github/scripts/render_pkgbuild.py). Do not edit
+# the placeholders.
+pkgname=lowquery-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Light SQL client for PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis"
+arch=('x86_64')
+url="https://github.com/LowBloat/LowQuery"
+license=('AGPL-3.0-only')
+depends=('webkit2gtk-4.1' 'gtk3' 'dbus' 'libsecret')
+provides=('lowquery')
+conflicts=('lowquery')
+options=('!strip')
+source=(
+    "lowquery-${pkgver}.tar.gz::https://github.com/LowBloat/LowQuery/releases/download/v${pkgver}/LowQuery-${pkgver}-linux-x64-portable.tar.gz"
+    "lowquery.desktop::https://raw.githubusercontent.com/LowBloat/LowQuery/v${pkgver}/packaging/arch/lowquery.desktop"
+    "lowquery.png::https://raw.githubusercontent.com/LowBloat/LowQuery/v${pkgver}/src-tauri/icons/128x128.png"
+)
+sha256sums=('__SHA256_PORTABLE__' '__SHA256_DESKTOP__' '__SHA256_ICON__')
+
+package() {
+    install -Dm755 "${srcdir}/LowQuery" "${pkgdir}/usr/bin/lowquery"
+    install -Dm644 "${srcdir}/lowquery.desktop" "${pkgdir}/usr/share/applications/lowquery.desktop"
+    install -Dm644 "${srcdir}/lowquery.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/lowquery.png"
+}

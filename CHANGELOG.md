@@ -4,6 +4,12 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-19
+
+### Added
+- Redis and Valkey: redis-cli style commands with quoting and escapes, RESP3 replies shown as tables (maps as field/value, sorted sets with scores, `INFO` as rows), databases and keys by type in the sidebar with a preview command per type, `MULTI`/`EXEC`/`DISCARD` from the toolbar, `CLIENT UNBLOCK` to stop blocking commands, ACL users and TLS.
+- Native Arch Linux package (`.pkg.tar.zst`) and a `PKGBUILD` with real checksums in every release.
+
 ## [0.2.0] - 2026-10-19
 
 ### Added
@@ -51,7 +57,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/LowBloat/LowQuery/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/LowBloat/LowQuery/compare/v0.1.0...v0.1.1

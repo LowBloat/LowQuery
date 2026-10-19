@@ -1,0 +1,22 @@
+# Maintainer: LowBloat <contato@fabioharaujo.com.br>
+# Built by the release workflow from the binary it just compiled; the
+# checksums are filled in there.
+pkgname=lowquery-bin
+pkgver=__VERSION__
+pkgrel=1
+pkgdesc="Light SQL client for PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis"
+arch=('x86_64')
+url="https://github.com/LowBloat/LowQuery"
+license=('AGPL-3.0-only')
+depends=('webkit2gtk-4.1' 'gtk3' 'dbus' 'libsecret')
+provides=('lowquery')
+conflicts=('lowquery')
+options=('!strip')
+source=('lowquery' 'lowquery.desktop' 'lowquery.png')
+sha256sums=('__SHA256_BIN__' '__SHA256_DESKTOP__' '__SHA256_ICON__')
+
+package() {
+    install -Dm755 "${srcdir}/lowquery" "${pkgdir}/usr/bin/lowquery"
+    install -Dm644 "${srcdir}/lowquery.desktop" "${pkgdir}/usr/share/applications/lowquery.desktop"
+    install -Dm644 "${srcdir}/lowquery.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/lowquery.png"
+}

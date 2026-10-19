@@ -5,7 +5,7 @@
  * SQL Server `GO` batches and BEGIN...END blocks, and SQLite trigger bodies.
  */
 
-export type Dialect = "postgres" | "oracle" | "mysql" | "sqlserver" | "sqlite";
+export type Dialect = "postgres" | "oracle" | "mysql" | "sqlserver" | "sqlite" | "redis";
 
 export interface SqlStatement {
 	/** Statement text, without the terminator (`;`, `/`, `GO` or a custom delimiter). */
@@ -97,11 +97,32 @@ function skipQuoted(sql: string, i: number, close: string, backslash: boolean): 
 	return n;
 }
 
+/** Redis: one command per line, as in redis-cli; `#` and `//` start comments. */
+function splitLines(text: string): SqlStatement[] {
+	const out: SqlStatement[] = [];
+	let lineStart = 0;
+	while (lineStart <= text.length) {
+		let lineEnd = text.indexOf("\n", lineStart);
+		if (lineEnd < 0) lineEnd = text.length;
+		let start = lineStart;
+		let end = lineEnd;
+		while (start < end && /\s/.test(text[start])) start++;
+		while (end > start && /\s/.test(text[end - 1])) end--;
+		const line = text.slice(start, end);
+		if (line && !line.startsWith("#") && !line.startsWith("//")) {
+			out.push({ text: line, start, end, until: lineEnd });
+		}
+		lineStart = lineEnd + 1;
+	}
+	return out;
+}
+
 export function splitStatements(
 	sql: string,
 	dialect: Dialect,
 	options: SplitOptions = {},
 ): SqlStatement[] {
+	if (dialect === "redis") return splitLines(sql);
 	const out: SqlStatement[] = [];
 	const n = sql.length;
 	let stmtStart = -1; // first significant character of the current statement
