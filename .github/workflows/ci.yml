@@ -138,12 +138,24 @@ jobs:
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml postgres -- --ignored --test-threads=1
 
   oracle:
-    name: Oracle integration (Free 23ai)
+    name: Oracle integration (${{ matrix.name }})
     runs-on: ubuntu-22.04
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Free 23ai
+            image: gvenzl/oracle-free:23-slim-faststart
+            service: FREEPDB1
+          # 21c, like 19c, does not mark the end of a response, so the driver
+          # parses multi-packet responses the way it does on most servers.
+          - name: XE 21c
+            image: gvenzl/oracle-xe:21-slim-faststart
+            service: XEPDB1
     services:
       oracle:
-        image: gvenzl/oracle-free:23-slim-faststart
+        image: ${{ matrix.image }}
         env:
           ORACLE_PASSWORD: lowquery
           APP_USER: lowquery
@@ -154,7 +166,7 @@ jobs:
     env:
       LQ_ORA_HOST: localhost
       LQ_ORA_PORT: "1521"
-      LQ_ORA_SERVICE: FREEPDB1
+      LQ_ORA_SERVICE: ${{ matrix.service }}
       LQ_ORA_USER: lowquery
       LQ_ORA_PASSWORD: lowquery
     steps:
@@ -163,7 +175,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: src-tauri
-          key: oracle
+          key: oracle-${{ matrix.service }}
       - name: Install Linux desktop dependencies
         run: |
           sudo apt-get update

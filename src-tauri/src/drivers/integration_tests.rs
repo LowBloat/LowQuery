@@ -314,6 +314,107 @@ async fn oracle_types_limits_and_output() {
     assert!(!schemas.is_empty());
 }
 
+/// ERP tables (Protheus `SA1010` and the like) have hundreds of columns, many
+/// of them blank in every row, so the server sends rows with repeated-column
+/// bit vectors and responses that span many packets. Servers before 26ai do
+/// not mark the end of a response, which makes the driver parse those
+/// responses packet by packet.
+#[tokio::test]
+#[ignore]
+async fn oracle_wide_rows_with_repeated_values() {
+    let Some((profile, pw)) = ora_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    const COLS: usize = 200;
+    const ROWS: usize = 3000;
+    // Column c: blank (repeated in every row), distinct per row, runs of
+    // seven equal values, or a number that alternates.
+    let expr = |c: usize| match c % 4 {
+        0 => "rpad(' ', 10)".to_string(),
+        1 => format!("'V' || level || '_{c}'"),
+        2 => "to_char(trunc(level / 7))".to_string(),
+        _ => format!("mod(level, 2) * {c}"),
+    };
+    let expected = |row: usize, c: usize| -> String {
+        let level = row + 1;
+        match c % 4 {
+            0 => " ".repeat(10),
+            1 => format!("V{level}_{c}"),
+            2 => (level / 7).to_string(),
+            _ => ((level % 2) * c).to_string(),
+        }
+    };
+    for (table, lob) in [("lq_wide", false), ("lq_wide_lob", true)] {
+        let _ = s
+            .execute(&req(&format!("drop table {table} purge"), 0))
+            .await;
+        let mut ddl: Vec<String> = (0..COLS)
+            .map(|c| {
+                let ty = if c % 4 == 3 { "number" } else { "varchar2(40)" };
+                format!("c{c} {ty}")
+            })
+            .collect();
+        ddl.push("d_e_l_e_t_ varchar2(1)".into());
+        ddl.push("r_e_c_n_o_ number primary key".into());
+        if lob {
+            ddl.push("memo blob".into());
+        }
+        s.execute(&req(
+            &format!("create table {table} ({})", ddl.join(", ")),
+            0,
+        ))
+        .await
+        .unwrap();
+        let cols: Vec<String> = (0..COLS).map(|c| format!("c{c}")).collect();
+        let vals: Vec<String> = (0..COLS).map(expr).collect();
+        s.execute(&req(
+            &format!(
+                "insert into {table} ({}, d_e_l_e_t_, r_e_c_n_o_)
+                 select {}, ' ', level from dual connect by level <= {ROWS}",
+                cols.join(", "),
+                vals.join(", ")
+            ),
+            0,
+        ))
+        .await
+        .unwrap();
+        s.execute(&req("commit", 0)).await.unwrap();
+
+        let sql = format!("select * from {table} order by r_e_c_n_o_");
+        // Twice: the second run reuses the cached statement without a describe.
+        for (limit, attempt) in [(500, 1), (500, 2), (200, 1), (0, 1)] {
+            let r = s
+                .execute(&req(&sql, limit))
+                .await
+                .unwrap_or_else(|e| panic!("{table} limit {limit} run {attempt}: {e}"));
+            let n = if limit == 0 { ROWS } else { limit };
+            assert_eq!(r.rows.len(), n, "{table} limit {limit}");
+            for (i, row) in r.rows.iter().enumerate() {
+                assert_eq!(row[COLS + 1].as_deref(), Some((i + 1).to_string().as_str()));
+                for c in [0, 1, 2, 3, 98, 99, 101, 102, 199] {
+                    assert_eq!(
+                        row[c].as_deref(),
+                        Some(expected(i, c).as_str()),
+                        "{table} row {} column c{c}",
+                        i + 1
+                    );
+                }
+            }
+        }
+        // The session is still usable afterwards.
+        assert_eq!(
+            one_row(&s, &format!("select count(*) from {table}")).await[0].as_deref(),
+            Some(ROWS.to_string().as_str())
+        );
+        s.execute(&req(&format!("drop table {table} purge"), 0))
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn oracle_connects_through_tns_alias() {
