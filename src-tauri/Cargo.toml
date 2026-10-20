@@ -61,3 +61,8 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
+
+# oracledb 26.0.0-beta.4 with two parser fixes for duplicate-column bit vectors
+# (see vendor/oracledb/LOWQUERY.md). Remove once a release includes them.
+[patch.crates-io]
+oracledb = { path = "vendor/oracledb" }

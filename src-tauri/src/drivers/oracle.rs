@@ -27,7 +27,9 @@ const BINARY_PREVIEW_BYTES: usize = 32 * 1024;
 const MAX_OUTPUT_LINES: usize = 5000;
 
 pub struct OraSession {
-    conn: Arc<Connection>,
+    conn: Mutex<Arc<Connection>>,
+    /// Opens a new connection with the same settings (see [`OraSession::reopen`]).
+    dial: Arc<dyn Fn() -> AppResult<Connection> + Send + Sync>,
     busy: tokio::sync::Mutex<()>,
     state: Arc<Mutex<TxState>>,
     /// Catalog lookups for editable results, per table as written.
@@ -92,42 +94,49 @@ fn network_target(profile: &ConnectionProfile) -> AppResult<(String, Option<Stri
     }
 }
 
+/// Opens a connection and prepares the session (module name, DBMS_OUTPUT).
+fn dial(profile: &ConnectionProfile, password: &str) -> AppResult<Connection> {
+    let (target, config_dir) = network_target(profile)?;
+    let mut cfg = oracledb::Config::default();
+    if let Some(dir) = &config_dir {
+        cfg = cfg.set_config_dir(dir);
+    }
+    cfg = cfg
+        .set_credentials(profile.user.trim(), password)
+        .set_program("LowQuery")
+        .map_err(connection_error)?
+        .set_connect_string(&target)
+        .map_err(connection_error)?;
+    if profile.oracle_privilege != OraclePrivilege::None {
+        cfg = cfg.set_auth_mode(profile.oracle_privilege.auth_mode());
+    }
+    let conn = oracledb::connect(cfg).map_err(connection_error)?;
+    let _ = conn.set_module("LowQuery");
+    // Enables DBMS_OUTPUT with no buffer limit.
+    conn.execute("begin dbms_output.enable(null); end;", &[])
+        .map_err(map_error)?;
+    Ok(conn)
+}
+
 pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> AppResult<OraSession> {
     let profile = profile.clone();
     let password = password.unwrap_or_default().to_string();
     blocking(move || {
-        let (target, config_dir) = network_target(&profile)?;
-        let mut cfg = oracledb::Config::default();
-        if let Some(dir) = &config_dir {
-            cfg = cfg.set_config_dir(dir);
-        }
-        cfg = cfg
-            .set_credentials(profile.user.trim(), &password)
-            .set_program("LowQuery")
-            .map_err(connection_error)?
-            .set_connect_string(&target)
-            .map_err(connection_error)?;
-        if profile.oracle_privilege != OraclePrivilege::None {
-            cfg = cfg.set_auth_mode(profile.oracle_privilege.auth_mode());
-        }
-        let conn = oracledb::connect(cfg).map_err(connection_error)?;
-        let _ = conn.set_module("LowQuery");
-
+        let conn = dial(&profile, &password)?;
         let row = conn
             .query_row(
                 "select sys_context('USERENV', 'SESSION_USER'), sys_context('USERENV', 'CURRENT_SCHEMA') from dual",
                 &[],
             )
             .map_err(map_error)?;
-        // Enables DBMS_OUTPUT with no buffer limit.
-        conn.execute("begin dbms_output.enable(null); end;", &[]).map_err(map_error)?;
 
         let version = conn.version().map(|v| v.to_string()).unwrap_or_default();
         Ok(OraSession {
             server_version: format!("Oracle {version}"),
             current_user: row.get(0).map_err(map_error)?,
             current_schema: row.get(1).map_err(map_error)?,
-            conn: Arc::new(conn),
+            conn: Mutex::new(Arc::new(conn)),
+            dial: Arc::new(move || dial(&profile, &password)),
             busy: tokio::sync::Mutex::new(()),
             state: Arc::new(Mutex::new(TxState { autocommit: true, in_transaction: false })),
             tables: TableCache::default(),
@@ -194,12 +203,53 @@ pub fn is_plsql(sql: &str) -> bool {
 }
 
 impl OraSession {
+    /// Runs `f` on the connection in a blocking task. When the driver loses
+    /// track of the server's reply, the connection is replaced.
+    async fn with_conn<T, F>(&self, f: F) -> AppResult<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&Connection) -> AppResult<T> + Send + 'static,
+    {
+        let conn = self.conn.lock().clone();
+        match blocking(move || f(&conn)).await {
+            Err(e) if e.kind == ErrorKind::Internal => Err(self.reopen(e).await),
+            result => result,
+        }
+    }
+
+    /// After a protocol error the rest of the reply is still unread on the
+    /// socket and every later call would fail on it, so the session moves to
+    /// a new connection. The open transaction is lost with the old one.
+    async fn reopen(&self, cause: AppError) -> AppError {
+        let was_in_transaction = std::mem::take(&mut self.state.lock().in_transaction);
+        self.tables.lock().clear();
+        let dial = self.dial.clone();
+        let mut err = match blocking(move || dial()).await {
+            Ok(conn) => {
+                *self.conn.lock() = Arc::new(conn);
+                let mut message = String::from(
+                    "The Oracle driver could not read the server's reply, so LowQuery reopened the connection.",
+                );
+                if was_in_transaction {
+                    message.push_str(" The open transaction was rolled back.");
+                }
+                AppError::new(ErrorKind::Database, message)
+            }
+            Err(e) => AppError::connection(format!(
+                "The Oracle driver could not read the server's reply, and reconnecting failed: {}",
+                e.message
+            )),
+        };
+        err.detail = Some(cause.message);
+        err
+    }
+
     pub async fn apply_changes(&self, req: &ApplyRequest) -> AppResult<ApplyResult> {
         let _busy = self.busy.lock().await;
-        let conn = self.conn.clone();
         let state = self.state.clone();
         let req = req.clone();
-        blocking(move || apply_blocking(&conn, &req, &state)).await
+        self.with_conn(move |conn| apply_blocking(conn, &req, &state))
+            .await
     }
 
     pub fn tx_state(&self) -> TxState {
@@ -208,12 +258,12 @@ impl OraSession {
 
     pub async fn execute(&self, req: &ExecRequest) -> AppResult<ExecResult> {
         let _busy = self.busy.lock().await;
-        let conn = self.conn.clone();
         let state = self.state.clone();
         let tables = self.tables.clone();
         let sql = prepare_sql(&req.sql);
         let max_rows = req.max_rows;
-        blocking(move || execute_blocking(&conn, &sql, max_rows, &state, &tables)).await
+        self.with_conn(move |conn| execute_blocking(conn, &sql, max_rows, &state, &tables))
+            .await
     }
 
     pub async fn cancel(&self) -> AppResult<()> {
@@ -233,8 +283,7 @@ impl OraSession {
 
     pub async fn end_transaction(&self, commit: bool) -> AppResult<TxState> {
         let _busy = self.busy.lock().await;
-        let conn = self.conn.clone();
-        blocking(move || {
+        self.with_conn(move |conn| {
             if commit {
                 conn.commit()
             } else {
@@ -361,8 +410,7 @@ impl OraSession {
         params: Vec<String>,
     ) -> AppResult<Vec<Vec<String>>> {
         let _busy = self.busy.lock().await;
-        let conn = self.conn.clone();
-        blocking(move || {
+        self.with_conn(move |conn| {
             let binds: Vec<&dyn oracledb::ToDbValue> = params
                 .iter()
                 .map(|p| p as &dyn oracledb::ToDbValue)
@@ -1980,6 +2028,14 @@ pub fn map_error(e: oracledb::Error) -> AppError {
             AppError::connection("The connection to the server was closed.")
         }
         K::CallTimeoutExceeded => AppError::new(ErrorKind::Cancelled, "Call timeout exceeded."),
+        // The driver lost its place in the server's reply; the session
+        // replaces the connection (see `OraSession::reopen`).
+        K::UnknownTtcMessageType(..)
+        | K::UnknownServerSidePiggyback(_)
+        | K::OutOfData
+        | K::UnexpectedResult
+        | K::UnexpectedError
+        | K::UnableToRecover => AppError::new(ErrorKind::Internal, e.to_string()),
         _ => AppError::new(ErrorKind::Database, e.to_string()),
     }
 }
