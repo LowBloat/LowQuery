@@ -48,7 +48,7 @@ tokio-util = { version = "0.7", features = ["compat"] }
 # Redis: RESP protocol over tokio, TLS through rustls.
 redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "tls-rustls-webpki-roots"] }
 # SQLite: embedded engine compiled into the app.
-rusqlite = { version = "0.40", features = ["bundled", "column_decltype"] }
+rusqlite = { version = "0.40", features = ["bundled", "column_decltype", "column_metadata"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Oracle homes registered by Windows installers.

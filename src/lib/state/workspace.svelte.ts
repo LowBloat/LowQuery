@@ -10,12 +10,15 @@ import {
 } from "../api";
 import { engineInfo } from "../engines";
 import { firstKeywords, splitStatements, statementAt, type SqlStatement } from "../sql/split";
+import { buildChanges, pendingCount, type EditMap } from "./edits";
 
 export interface ResultSet {
 	id: string;
 	title: string;
 	sql: string;
 	result: ExecResult;
+	/** Unsaved grid edits; only for results with `result.editable`. */
+	edits: EditMap;
 }
 
 export type LogLevel = "info" | "success" | "notice" | "error";
@@ -51,6 +54,7 @@ export class QueryTab {
 	connecting = $state(false);
 	running = $state(false);
 	cancelling = $state(false);
+	saving = $state(false);
 	autocommit = $state(true);
 	inTransaction = $state(false);
 	maxRows = $state(500);
@@ -77,6 +81,11 @@ export class QueryTab {
 		if (this.log.length > 500) this.log.splice(0, this.log.length - 500);
 	}
 
+	/** Unsaved grid edits across all results of the tab. */
+	get pendingEdits(): number {
+		return this.results.reduce((n, r) => n + pendingCount(r.edits), 0);
+	}
+
 	clearResults() {
 		this.results = [];
 		this.activeResult = "messages";
@@ -100,6 +109,31 @@ class PasswordPrompt {
 		this.resolver = null;
 		this.profile = null;
 		r?.(pw);
+	}
+}
+
+export interface ConfirmRequest {
+	title: string;
+	message: string;
+	confirmLabel: string;
+	destructive?: boolean;
+}
+
+class ConfirmPrompt {
+	request = $state<ConfirmRequest | null>(null);
+	private resolver: ((ok: boolean) => void) | null = null;
+
+	ask(request: ConfirmRequest): Promise<boolean> {
+		this.resolver?.(false);
+		this.request = request;
+		return new Promise((resolve) => (this.resolver = resolve));
+	}
+
+	answer(ok: boolean) {
+		const r = this.resolver;
+		this.resolver = null;
+		this.request = null;
+		r?.(ok);
 	}
 }
 
@@ -129,6 +163,7 @@ export class Workspace {
 	tabs = $state<QueryTab[]>([]);
 	activeTabId = $state<string | null>(null);
 	password = new PasswordPrompt();
+	confirm = new ConfirmPrompt();
 	/** Profile being edited in the dialog (null = closed). */
 	editing = $state<ConnectionProfile | null>(null);
 
@@ -183,6 +218,7 @@ export class Workspace {
 		const idx = this.tabs.findIndex((t) => t.id === id);
 		if (idx < 0) return;
 		const tab = this.tabs[idx];
+		if (!(await this.confirmDiscard(tab))) return;
 		await this.disconnect(tab);
 		this.tabs.splice(idx, 1);
 		if (this.activeTabId === id) this.activeTabId = this.tabs[Math.min(idx, this.tabs.length - 1)]?.id ?? null;
@@ -265,6 +301,7 @@ export class Workspace {
 
 	async setConnection(tab: QueryTab, profileId: string | null) {
 		if (tab.profileId === profileId && tab.session) return;
+		if (!(await this.confirmDiscard(tab))) return;
 		if (tab.session && tab.inTransaction) {
 			tab.addLog("notice", "The pending transaction was rolled back when switching connections.");
 		}
@@ -340,6 +377,7 @@ export class Workspace {
 			toast.info("Nothing to run.");
 			return;
 		}
+		if (!(await this.confirmDiscard(tab))) return;
 		if (!(await this.connect(tab)) || !tab.session) return;
 
 		tab.running = true;
@@ -365,6 +403,7 @@ export class Workspace {
 							title: statements.length > 1 ? `Result ${tab.results.length + 1}` : "Result",
 							sql: stmt.text,
 							result,
+							edits: {},
 						});
 						if (tab.results.length === 1) tab.activeResult = id;
 						tab.addLog(
@@ -415,6 +454,82 @@ export class Workspace {
 			while (to < stmt.end && /[\w$#".]/.test(tab.sql[to] ?? "")) to++;
 		}
 		tab.editorError = { from: pos, to: Math.max(to, pos + 1), message: err.message };
+	}
+
+	/** Asks before an action that would drop unsaved grid edits. */
+	async confirmDiscard(tab: QueryTab): Promise<boolean> {
+		const n = tab.pendingEdits;
+		if (n === 0) return true;
+		return this.confirm.ask({
+			title: "Discard unsaved changes?",
+			message: `${n} ${n === 1 ? "row has" : "rows have"} unsaved changes in the result grid. Save them first to keep them.`,
+			confirmLabel: "Discard changes",
+			destructive: true,
+		});
+	}
+
+	/**
+	 * Writes the pending grid edits of a result: one transaction with
+	 * autocommit on, the open transaction otherwise. On success the query
+	 * runs again so the grid shows what the database now holds.
+	 */
+	async saveEdits(tab: QueryTab, rs: ResultSet): Promise<boolean> {
+		const target = rs.result.editable;
+		if (!target || tab.saving || tab.running) return false;
+		const changes = buildChanges(target, rs.result.rows, rs.edits);
+		if (changes.length === 0) return true;
+		if (!tab.session) {
+			toast.warning("The connection was closed. Run the query again to edit its rows.");
+			return false;
+		}
+		const table = target.schema ? `${target.schema}.${target.table}` : target.table;
+		tab.saving = true;
+		try {
+			const r = await api.applyChanges(tab.session.sessionId, target, changes);
+			tab.inTransaction = r.inTransaction;
+			rs.edits = {};
+			const parts = [
+				r.updated && `${r.updated} updated`,
+				r.inserted && `${r.inserted} inserted`,
+				r.deleted && `${r.deleted} deleted`,
+			].filter(Boolean);
+			tab.addLog("success", `Saved to ${table}: ${parts.join(", ") || "no changes"}`, { elapsedMs: r.elapsedMs });
+			if (r.inTransaction) {
+				tab.addLog("notice", "The changes are in the open transaction: COMMIT to keep them or ROLLBACK to undo.");
+			}
+			toast.success(r.inTransaction ? "Saved in the open transaction" : "Changes saved");
+			await this.refreshResult(tab, rs);
+			return true;
+		} catch (e) {
+			const err = asAppError(e);
+			let text = errorText(err);
+			if (err.detail) text += `\n${err.detail}`;
+			tab.addLog("error", `Changes to ${table} were not saved. ${text}`);
+			toast.error(err.message);
+			if (err.kind === "connection" || err.kind === "not_found") {
+				tab.session = null;
+				tab.inTransaction = false;
+			}
+			return false;
+		} finally {
+			tab.saving = false;
+		}
+	}
+
+	discardEdits(rs: ResultSet) {
+		rs.edits = {};
+	}
+
+	/** Runs a result's query again and replaces its rows in place. */
+	private async refreshResult(tab: QueryTab, rs: ResultSet) {
+		if (!tab.session) return;
+		try {
+			const result = await api.execute(tab.session.sessionId, rs.sql, tab.maxRows);
+			tab.inTransaction = result.inTransaction;
+			if (result.columns) rs.result = result;
+		} catch (e) {
+			tab.addLog("notice", `The result could not be refreshed: ${asAppError(e).message}`, { sql: rs.sql });
+		}
 	}
 
 	async cancel(tab: QueryTab) {

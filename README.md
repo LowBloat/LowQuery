@@ -46,6 +46,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 - **Large tables are safe to open.** The row limit is applied by the server, so `SELECT *` on a big table does not pull it across the network.
 - **Oracle without the client install, and with yours when you have it.** No Oracle Client is required, yet LowQuery reads the `tnsnames.ora` your machine already uses: from `TNS_ADMIN`, `ORACLE_HOME`, the Oracle homes in the Windows registry or an Instant Client on `PATH`. Pick an alias, import many at once, or connect by service name, SID, descriptor or Easy Connect, as SYSDBA when needed.
 - **Passwords stay in your keychain.** Profiles are a plain JSON file; passwords live in Windows Credential Manager, macOS Keychain or Linux Secret Service.
+- **Edit rows where you read them.** When a result comes from one table and includes its primary key, change cells, add, duplicate or delete rows in the grid and save them in one transaction. LowQuery asks the database which table and key each column comes from instead of guessing from the SQL, binds every value with its column type, and undoes the whole save when a row's key no longer matches exactly one row.
 - **Errors you can act on.** Native codes (SQLSTATE, ORA-NNNNN), detail and hint, with the failing token underlined in the editor.
 
 | Writing queries | Reading results |
@@ -55,6 +56,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 | Run the statement under the cursor, a selection or the whole script | Value viewer with formatted JSON |
 | PL/SQL blocks with `/`, PostgreSQL `$$` bodies, MySQL `DELIMITER`, SQL Server `GO` | Copy as TSV, export to CSV or JSON |
 | One session per tab, autocommit or Commit/Rollback | `RAISE NOTICE`, `DBMS_OUTPUT` and MySQL warnings in the Messages tab |
+| Script results in separate tabs | Edit cells, add and delete rows, then save or discard |
 
 ## Get started
 
@@ -97,7 +99,11 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 | Ctrl+T / Ctrl+W | New tab / close tab |
 | F2 on a tab, double-click | Rename the tab |
 | Ctrl+C / Ctrl+Shift+C in the grid | Copy the value / the row |
-| Enter in the grid | Open the value viewer |
+| Double-click, Enter or F2 in the grid | Edit the cell (or open the value viewer when the result is read-only) |
+| Typing over a cell | Replace its value |
+| Insert / Delete in the grid | Add a row / mark the row for deletion |
+| Ctrl+Z in the grid | Revert the cell |
+| Ctrl+S in the grid | Save the changes |
 
 ## How it works
 
@@ -136,8 +142,7 @@ bun run tauri dev
 - Fetch more rows on demand without running the query again.
 - Execution plans (`EXPLAIN`, `DBMS_XPLAN`).
 - Query history per connection.
-- Editing data in the grid.
-- More engines: SQL Server, MySQL/MariaDB and SQLite.
+- Editing results that join several tables, one table at a time.
 
 Suggestions and database requests are welcome in the [issue forms](https://github.com/LowBloat/LowQuery/issues/new/choose).
 

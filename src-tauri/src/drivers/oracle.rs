@@ -5,6 +5,7 @@
 //! limit is applied by tuning `prefetch_rows`/`fetch_array_size` and
 //! stopping the cursor read, without fetching the rest from the server.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::Instant;
@@ -17,8 +18,9 @@ use parking_lot::Mutex;
 use super::{first_keywords, tns, TxState};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
-    ColumnInfo, ConnectionProfile, DbColumn, DbObject, ExecRequest, ExecResult, OracleConnectType,
-    OraclePrivilege, ValueKind,
+    ApplyRequest, ApplyResult, CellValue, ColumnInfo, ConnectionProfile, DbColumn, DbObject,
+    EditColumn, EditTarget, ExecRequest, ExecResult, OracleConnectType, OraclePrivilege, RowChange,
+    ValueKind,
 };
 
 const BINARY_PREVIEW_BYTES: usize = 32 * 1024;
@@ -28,6 +30,8 @@ pub struct OraSession {
     conn: Arc<Connection>,
     busy: tokio::sync::Mutex<()>,
     state: Arc<Mutex<TxState>>,
+    /// Catalog lookups for editable results, per table as written.
+    tables: TableCache,
     pub server_version: String,
     pub current_user: Option<String>,
     pub current_schema: Option<String>,
@@ -126,6 +130,7 @@ pub async fn connect(profile: &ConnectionProfile, password: Option<&str>) -> App
             conn: Arc::new(conn),
             busy: tokio::sync::Mutex::new(()),
             state: Arc::new(Mutex::new(TxState { autocommit: true, in_transaction: false })),
+            tables: TableCache::default(),
         })
     })
     .await
@@ -189,6 +194,14 @@ pub fn is_plsql(sql: &str) -> bool {
 }
 
 impl OraSession {
+    pub async fn apply_changes(&self, req: &ApplyRequest) -> AppResult<ApplyResult> {
+        let _busy = self.busy.lock().await;
+        let conn = self.conn.clone();
+        let state = self.state.clone();
+        let req = req.clone();
+        blocking(move || apply_blocking(&conn, &req, &state)).await
+    }
+
     pub fn tx_state(&self) -> TxState {
         *self.state.lock()
     }
@@ -197,9 +210,10 @@ impl OraSession {
         let _busy = self.busy.lock().await;
         let conn = self.conn.clone();
         let state = self.state.clone();
+        let tables = self.tables.clone();
         let sql = prepare_sql(&req.sql);
         let max_rows = req.max_rows;
-        blocking(move || execute_blocking(&conn, &sql, max_rows, &state)).await
+        blocking(move || execute_blocking(&conn, &sql, max_rows, &state, &tables)).await
     }
 
     pub async fn cancel(&self) -> AppResult<()> {
@@ -298,7 +312,7 @@ impl OraSession {
                 "select c.column_name,
                         case
                           when c.data_type in ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
-                            then c.data_type || '(' || nvl(c.char_length, c.data_length) || ')'
+                            then c.data_type || '(' || case when c.char_length > 0 then c.char_length else c.data_length end || ')'
                           when c.data_type = 'NUMBER' and c.data_precision is not null
                             then 'NUMBER(' || c.data_precision ||
                                  case when c.data_scale > 0 then ',' || c.data_scale end || ')'
@@ -387,6 +401,7 @@ fn execute_blocking(
     sql: &str,
     max_rows: usize,
     state: &Mutex<TxState>,
+    tables: &TableCache,
 ) -> AppResult<ExecResult> {
     let started = Instant::now();
     let array = if max_rows == 0 {
@@ -427,10 +442,19 @@ fn execute_blocking(
             }
             result.rows.push(cells);
         }
+        match edit_target(conn, sql, &cols, tables) {
+            Ok(target) => result.editable = Some(target),
+            Err(reason) => result.read_only_reason = Some(reason),
+        }
     } else {
         let is_dml = stmt.is_dml();
         let is_plsql = stmt.is_plsql();
         let is_ddl = stmt.is_ddl();
+        if !is_dml {
+            // DDL, ALTER SESSION (current schema) or PL/SQL may change what a
+            // table name resolves to.
+            tables.lock().clear();
+        }
         let exec = stmt.execute(&[]).map_err(map_error)?;
         if is_dml {
             result.rows_affected = Some(exec.rows_affected());
@@ -575,6 +599,13 @@ fn float(nan: bool, infinite: bool, positive: bool, text: String) -> String {
 
 /// `2024-05-01 13:45:00[.123][ +03:00]`, with the column's fractional digits.
 fn timestamp(t: &OracleTimestamp, scale: i8, with_tz: bool) -> String {
+    let local;
+    let t = if with_tz {
+        local = local_time(t);
+        &local
+    } else {
+        t
+    };
     let mut s = format!(
         "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
         t.year(),
@@ -596,6 +627,32 @@ fn timestamp(t: &OracleTimestamp, scale: i8, with_tz: bool) -> String {
         let _ = write!(s, " {sign}{:02}:{:02}", h.unsigned_abs(), m.unsigned_abs());
     }
     s
+}
+
+/// The driver returns TIMESTAMP WITH TIME ZONE values as UTC date and time
+/// plus the offset; this moves them to the local time of that offset.
+fn local_time(t: &OracleTimestamp) -> OracleTimestamp {
+    use chrono::{Datelike, Timelike};
+    let (h, m) = (t.tz_hour_offset(), t.tz_minute_offset());
+    let minutes = i64::from(h) * 60 + i64::from(m);
+    let shifted =
+        chrono::NaiveDate::from_ymd_opt(t.year().into(), t.month().into(), t.day().into())
+            .and_then(|d| d.and_hms_opt(t.hour().into(), t.minute().into(), t.second().into()))
+            .and_then(|dt| dt.checked_add_signed(chrono::Duration::minutes(minutes)));
+    match shifted {
+        Some(dt) => OracleTimestamp::new_timestamp_tz(
+            dt.year() as i16,
+            dt.month() as u8,
+            dt.day() as u8,
+            dt.hour() as u8,
+            dt.minute() as u8,
+            dt.second() as u8,
+            t.nanoseconds(),
+            h,
+            m,
+        ),
+        None => *t,
+    }
 }
 
 /// Uppercase hexadecimal, the way SQL*Plus displays RAW.
@@ -687,6 +744,1210 @@ fn json(v: &JsonValue, out: &mut String) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Editable results
+//
+// The thin protocol does not say which table a result column comes from, so
+// the statement text is checked conservatively: one SELECT over exactly one
+// table, with a select list of `*`, `alias.*` and plain columns. The table is
+// resolved and its key read from the data dictionary in one query, cached
+// per table name as written until DDL, ALTER SESSION or PL/SQL runs.
+// ---------------------------------------------------------------------------
+
+const RO_TABLE: &str = "Read-only: only rows from a table can be edited.";
+const RO_JOIN: &str = "Read-only: the result combines columns from several tables.";
+const RO_GROUPED: &str = "Read-only: grouped or distinct rows cannot be edited.";
+const RO_SET: &str = "Read-only: the result combines several queries.";
+const RO_COMPLEX: &str = "Read-only: the query is too complex to map its rows to a table.";
+const RO_UNKNOWN: &str = "Read-only: the table behind this result could not be identified.";
+const RO_REMOTE: &str = "Read-only: tables over database links cannot be edited.";
+
+type TableCache = Arc<Mutex<HashMap<(Option<String>, String), Arc<Lookup>>>>;
+
+enum Lookup {
+    Table(TableInfo),
+    ReadOnly(String),
+}
+
+struct TableInfo {
+    owner: String,
+    name: String,
+    /// Visible columns in `select *` order.
+    columns: Vec<TableColumn>,
+    key: Vec<String>,
+    primary: bool,
+}
+
+struct TableColumn {
+    name: String,
+    type_name: String,
+    nullable: bool,
+    generated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum Tok {
+    /// Unquoted word, uppercased.
+    Word(String),
+    /// Quoted identifier, as written.
+    Quoted(String),
+    Str,
+    Num,
+    Punct(char),
+}
+
+/// Tokens of a statement, without comments. `None` when a literal, quoted
+/// identifier or comment is not closed.
+fn lex(sql: &str) -> Option<Vec<Tok>> {
+    let c: Vec<char> = sql.chars().collect();
+    let n = c.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < n {
+        let ch = c[i];
+        let next = c.get(i + 1).copied();
+        if ch.is_whitespace() {
+            i += 1;
+        } else if ch == '-' && next == Some('-') {
+            while i < n && c[i] != '\n' {
+                i += 1;
+            }
+        } else if ch == '/' && next == Some('*') {
+            i += 2;
+            while i + 1 < n && !(c[i] == '*' && c[i + 1] == '/') {
+                i += 1;
+            }
+            if i + 1 >= n {
+                return None;
+            }
+            i += 2;
+        } else if ch == '\'' {
+            i = skip_string(&c, i)?;
+            out.push(Tok::Str);
+        } else if matches!(ch, 'q' | 'Q') && next == Some('\'') {
+            i = skip_q_string(&c, i + 1)?;
+            out.push(Tok::Str);
+        } else if matches!(ch, 'n' | 'N') && next == Some('\'') {
+            i = skip_string(&c, i + 1)?;
+            out.push(Tok::Str);
+        } else if matches!(ch, 'n' | 'N')
+            && matches!(next, Some('q' | 'Q'))
+            && c.get(i + 2) == Some(&'\'')
+        {
+            i = skip_q_string(&c, i + 2)?;
+            out.push(Tok::Str);
+        } else if ch == '"' {
+            let start = i + 1;
+            let end = start + c[start..].iter().position(|&x| x == '"')?;
+            if end == start {
+                return None;
+            }
+            out.push(Tok::Quoted(c[start..end].iter().collect()));
+            i = end + 1;
+        } else if ch.is_ascii_digit() || (ch == '.' && next.is_some_and(|d| d.is_ascii_digit())) {
+            while i < n && (c[i].is_ascii_digit() || c[i] == '.') {
+                i += 1;
+            }
+            if i < n && matches!(c[i], 'e' | 'E') {
+                let sign = usize::from(matches!(c.get(i + 1), Some('+' | '-')));
+                if c.get(i + 1 + sign).is_some_and(char::is_ascii_digit) {
+                    i += 1 + sign;
+                    while i < n && c[i].is_ascii_digit() {
+                        i += 1;
+                    }
+                }
+            }
+            if i < n && matches!(c[i], 'f' | 'F' | 'd' | 'D') {
+                i += 1;
+            }
+            out.push(Tok::Num);
+        } else if ch.is_alphabetic() {
+            let start = i;
+            while i < n && (c[i].is_alphanumeric() || matches!(c[i], '_' | '$' | '#')) {
+                i += 1;
+            }
+            let word: String = c[start..i].iter().collect();
+            out.push(Tok::Word(word.to_uppercase()));
+        } else {
+            out.push(Tok::Punct(ch));
+            i += 1;
+        }
+    }
+    Some(out)
+}
+
+/// End of a `'...'` literal that starts at `quote`.
+fn skip_string(c: &[char], quote: usize) -> Option<usize> {
+    let mut i = quote + 1;
+    loop {
+        match c.get(i)? {
+            '\'' if c.get(i + 1) == Some(&'\'') => i += 2,
+            '\'' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+}
+
+/// End of a `q'[...]'` literal whose quote is at `quote`.
+fn skip_q_string(c: &[char], quote: usize) -> Option<usize> {
+    let open = *c.get(quote + 1)?;
+    let close = match open {
+        '[' => ']',
+        '(' => ')',
+        '{' => '}',
+        '<' => '>',
+        x => x,
+    };
+    let mut i = quote + 2;
+    loop {
+        if *c.get(i)? == close && c.get(i + 1) == Some(&'\'') {
+            return Some(i + 2);
+        }
+        i += 1;
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum SelItem {
+    /// `*` (no qualifier) or `q.*`.
+    Star(Vec<String>),
+    Column {
+        qual: Vec<String>,
+        name: String,
+        alias: Option<String>,
+    },
+    Expr,
+}
+
+#[derive(Debug, PartialEq)]
+struct SelectShape {
+    schema: Option<String>,
+    table: String,
+    alias: Option<String>,
+    items: Vec<SelItem>,
+}
+
+impl SelectShape {
+    fn qualifier_matches(&self, qual: &[String]) -> bool {
+        match (qual, &self.alias, &self.schema) {
+            ([], _, _) => true,
+            ([q], Some(alias), _) => q == alias,
+            ([q], None, _) => *q == self.table,
+            ([s, q], None, Some(schema)) => s == schema && *q == self.table,
+            _ => false,
+        }
+    }
+}
+
+fn name_tok(t: Option<&Tok>) -> Option<String> {
+    match t? {
+        Tok::Word(w) | Tok::Quoted(w) => Some(w.clone()),
+        _ => None,
+    }
+}
+
+fn word_at(toks: &[Tok], i: usize) -> Option<&str> {
+    match toks.get(i)? {
+        Tok::Word(w) => Some(w),
+        _ => None,
+    }
+}
+
+/// Words that end the table reference instead of naming its alias.
+const NOT_ALIAS: &[&str] = &[
+    "WHERE",
+    "ORDER",
+    "FETCH",
+    "OFFSET",
+    "FOR",
+    "GROUP",
+    "HAVING",
+    "CONNECT",
+    "START",
+    "UNION",
+    "INTERSECT",
+    "MINUS",
+    "EXCEPT",
+    "JOIN",
+    "INNER",
+    "LEFT",
+    "RIGHT",
+    "FULL",
+    "CROSS",
+    "NATURAL",
+    "OUTER",
+    "PIVOT",
+    "UNPIVOT",
+    "MODEL",
+    "SAMPLE",
+    "PARTITION",
+    "SUBPARTITION",
+    "AS",
+    "VERSIONS",
+    "MATCH_RECOGNIZE",
+    "WINDOW",
+    "LIMIT",
+    "QUALIFY",
+    "APPLY",
+    "LATERAL",
+    "WITH",
+];
+
+/// Checks that the statement reads rows of one table and nothing else.
+fn parse_select(sql: &str) -> Result<SelectShape, &'static str> {
+    let toks = lex(sql).ok_or(RO_COMPLEX)?;
+    match word_at(&toks, 0) {
+        Some("SELECT") => {}
+        _ => return Err(RO_TABLE),
+    }
+    let mut i = 1;
+    match word_at(&toks, i) {
+        Some("DISTINCT" | "UNIQUE") => return Err(RO_GROUPED),
+        Some("ALL") => i += 1,
+        _ => {}
+    }
+
+    // Select list, up to FROM.
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = i;
+    loop {
+        match toks.get(i).ok_or(RO_TABLE)? {
+            Tok::Punct('(') => depth += 1,
+            Tok::Punct(')') => depth = depth.checked_sub(1).ok_or(RO_COMPLEX)?,
+            Tok::Punct(',') if depth == 0 => {
+                items.push(parse_item(&toks[start..i]));
+                start = i + 1;
+            }
+            Tok::Word(w) if depth == 0 && w == "FROM" => {
+                items.push(parse_item(&toks[start..i]));
+                break;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    // FROM [schema.]table [alias]
+    i += 1;
+    if toks.get(i) == Some(&Tok::Punct('(')) {
+        return Err(RO_TABLE);
+    }
+    let mut parts = vec![name_tok(toks.get(i)).ok_or(RO_COMPLEX)?];
+    i += 1;
+    while toks.get(i) == Some(&Tok::Punct('.')) {
+        parts.push(name_tok(toks.get(i + 1)).ok_or(RO_COMPLEX)?);
+        i += 2;
+    }
+    if parts.len() > 2 {
+        return Err(RO_COMPLEX);
+    }
+    match toks.get(i) {
+        // Table functions, `only (...)`, `lateral (...)`.
+        Some(Tok::Punct('(')) => return Err(RO_TABLE),
+        Some(Tok::Punct('@')) => return Err(RO_REMOTE),
+        _ => {}
+    }
+    let mut alias = None;
+    match toks.get(i) {
+        Some(Tok::Quoted(a)) => {
+            alias = Some(a.clone());
+            i += 1;
+        }
+        Some(Tok::Word(w)) if !NOT_ALIAS.contains(&w.as_str()) => {
+            alias = Some(w.clone());
+            i += 1;
+        }
+        _ => {}
+    }
+    match toks.get(i) {
+        None => {}
+        Some(Tok::Word(w)) => match w.as_str() {
+            "WHERE" | "ORDER" | "FETCH" | "OFFSET" | "FOR" => {}
+            "JOIN" | "INNER" | "LEFT" | "RIGHT" | "FULL" | "CROSS" | "NATURAL" | "OUTER"
+            | "APPLY" => return Err(RO_JOIN),
+            "GROUP" | "HAVING" => return Err(RO_GROUPED),
+            "UNION" | "INTERSECT" | "MINUS" | "EXCEPT" => return Err(RO_SET),
+            _ => return Err(RO_COMPLEX),
+        },
+        Some(Tok::Punct(',')) => return Err(RO_JOIN),
+        Some(_) => return Err(RO_COMPLEX),
+    }
+
+    // The remaining clauses must not group, combine or walk the rows.
+    let rest = &toks[i..];
+    let mut depth = 0usize;
+    for (j, t) in rest.iter().enumerate() {
+        match t {
+            Tok::Punct('(') => depth += 1,
+            Tok::Punct(')') => depth = depth.saturating_sub(1),
+            Tok::Word(w) if depth == 0 => match (w.as_str(), word_at(rest, j + 1)) {
+                ("GROUP", Some("BY")) | ("HAVING", _) => return Err(RO_GROUPED),
+                ("UNION" | "INTERSECT" | "MINUS" | "EXCEPT", _) => return Err(RO_SET),
+                ("CONNECT", Some("BY"))
+                | ("START", Some("WITH"))
+                | ("DIMENSION", Some("BY"))
+                | ("ORDER", Some("SIBLINGS")) => return Err(RO_COMPLEX),
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    let table = parts.pop().unwrap_or_default();
+    Ok(SelectShape {
+        schema: parts.pop(),
+        table,
+        alias,
+        items,
+    })
+}
+
+/// One select-list item: `*`, `q.*`, a plain column with an optional alias,
+/// or anything else.
+fn parse_item(t: &[Tok]) -> SelItem {
+    if t == [Tok::Punct('*')] {
+        return SelItem::Star(Vec::new());
+    }
+    let mut parts = Vec::new();
+    let mut i = 0;
+    loop {
+        match t.get(i) {
+            Some(Tok::Word(w) | Tok::Quoted(w)) => parts.push(w.clone()),
+            Some(Tok::Punct('*')) if !parts.is_empty() && i + 1 == t.len() => {
+                return SelItem::Star(parts)
+            }
+            _ => return SelItem::Expr,
+        }
+        i += 1;
+        if t.get(i) == Some(&Tok::Punct('.')) {
+            i += 1;
+        } else {
+            break;
+        }
+    }
+    if parts.len() > 3 {
+        return SelItem::Expr;
+    }
+    let alias = match &t[i..] {
+        [] => None,
+        [Tok::Word(as_kw), a] if as_kw == "AS" => match name_tok(Some(a)) {
+            Some(a) => Some(a),
+            None => return SelItem::Expr,
+        },
+        [a] => match name_tok(Some(a)) {
+            Some(a) => Some(a),
+            None => return SelItem::Expr,
+        },
+        _ => return SelItem::Expr,
+    };
+    let name = parts.pop().unwrap_or_default();
+    SelItem::Column {
+        qual: parts,
+        name,
+        alias,
+    }
+}
+
+/// Works out whether the rows of a query can be edited, and how.
+fn edit_target(
+    conn: &Connection,
+    sql: &str,
+    cols: &[Metadata],
+    tables: &TableCache,
+) -> Result<EditTarget, String> {
+    let shape = parse_select(sql).map_err(str::to_string)?;
+    if shape.table == "DUAL" && shape.schema.as_deref().is_none_or(|s| s == "SYS") {
+        return Err(RO_TABLE.into());
+    }
+    let cache_key = (shape.schema.clone(), shape.table.clone());
+    let cached = tables.lock().get(&cache_key).cloned();
+    let lookup = match cached {
+        Some(l) => l,
+        None => {
+            let l = Arc::new(
+                lookup_table(conn, shape.schema.as_deref(), &shape.table)
+                    .map_err(|_| RO_UNKNOWN.to_string())?,
+            );
+            tables.lock().insert(cache_key, l.clone());
+            l
+        }
+    };
+    let info = match &*lookup {
+        Lookup::Table(info) => info,
+        Lookup::ReadOnly(reason) => return Err(reason.clone()),
+    };
+    let names: Vec<&str> = cols.iter().map(Metadata::name).collect();
+    map_columns(&shape, info, &names)
+}
+
+/// Maps result columns (by their names in the result) to table columns and
+/// finds the key in the result.
+fn map_columns(
+    shape: &SelectShape,
+    info: &TableInfo,
+    result_names: &[&str],
+) -> Result<EditTarget, String> {
+    let mismatch = || {
+        format!(
+            "Read-only: the result columns could not be matched to table {}.",
+            info.name
+        )
+    };
+    // Table column and the name the result should give it.
+    let mut mapped: Vec<Option<(&TableColumn, String)>> = Vec::with_capacity(result_names.len());
+    for item in &shape.items {
+        match item {
+            SelItem::Star(qual) => {
+                if !shape.qualifier_matches(qual) {
+                    return Err(mismatch());
+                }
+                mapped.extend(info.columns.iter().map(|c| Some((c, c.name.clone()))));
+            }
+            SelItem::Column { qual, name, alias } => {
+                let col = shape
+                    .qualifier_matches(qual)
+                    .then(|| info.columns.iter().find(|c| c.name == *name))
+                    .flatten();
+                mapped.push(col.map(|c| (c, alias.clone().unwrap_or_else(|| c.name.clone()))));
+            }
+            SelItem::Expr => mapped.push(None),
+        }
+    }
+    if mapped.len() != result_names.len() {
+        return Err(mismatch());
+    }
+    let mut columns = Vec::with_capacity(mapped.len());
+    for (m, result_name) in mapped.iter().zip(result_names) {
+        columns.push(match m {
+            Some((c, expected)) => {
+                if result_name != expected {
+                    return Err(mismatch());
+                }
+                (!c.generated && col_type(&c.type_name).is_some()).then(|| EditColumn {
+                    name: c.name.clone(),
+                    type_name: c.type_name.clone(),
+                })
+            }
+            None => None,
+        });
+    }
+
+    let mut key = Vec::with_capacity(info.key.len());
+    for k in &info.key {
+        let found = columns
+            .iter()
+            .position(|c| c.as_ref().is_some_and(|c| c.name == *k));
+        match found {
+            Some(i) => key.push(i),
+            None if mapped.iter().flatten().any(|(c, _)| c.name == *k) => {
+                return Err(format!(
+                    "Read-only: key column {k} has a type that cannot be edited here."
+                ))
+            }
+            None => {
+                let kind = if info.primary { "primary key" } else { "key" };
+                return Err(format!(
+                    "Read-only: add the {kind} columns ({}) to the query to edit rows.",
+                    info.key.join(", ")
+                ));
+            }
+        }
+    }
+    Ok(EditTarget {
+        schema: Some(info.owner.clone()),
+        table: info.name.clone(),
+        columns,
+        key,
+    })
+}
+
+/// Resolves a table name the way Oracle does (current schema, then public
+/// synonyms; one level of synonym) and reads its columns and keys, in one
+/// round trip.
+const LOOKUP_SQL: &str = "
+with named as (
+  select o.owner, o.object_name, o.object_type
+    from all_objects o
+   where o.owner = nvl(:1, sys_context('USERENV', 'CURRENT_SCHEMA'))
+     and o.object_name = :2
+     and o.subobject_name is null
+     and o.object_type in ('TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW')
+  union all
+  select s.owner, s.synonym_name, 'SYNONYM'
+    from all_synonyms s
+   where :3 is null and s.owner = 'PUBLIC' and s.synonym_name = :4
+     and not exists (
+       select 1 from all_objects o
+        where o.owner = sys_context('USERENV', 'CURRENT_SCHEMA')
+          and o.object_name = :5
+          and o.subobject_name is null
+          and o.object_type in ('TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW'))
+),
+resolved as (
+  select n.object_type kind, n.owner, n.object_name name
+    from named n
+   where n.object_type <> 'SYNONYM'
+  union all
+  select case when s.db_link is not null then 'REMOTE'
+              else nvl(o.object_type, 'MISSING') end,
+         s.table_owner, s.table_name
+    from named n
+    join all_synonyms s on s.owner = n.owner and s.synonym_name = n.object_name
+    left join all_objects o on o.owner = s.table_owner and o.object_name = s.table_name
+         and o.subobject_name is null
+         and o.object_type in ('TABLE', 'VIEW', 'SYNONYM', 'MATERIALIZED VIEW')
+   where n.object_type = 'SYNONYM'
+)
+select 'O', r.kind, r.owner, r.name, cast(null as varchar2(3)), cast(null as varchar2(40))
+  from resolved r
+union all
+select 'C', c.column_name,
+       case
+         when c.data_type in ('VARCHAR2', 'NVARCHAR2', 'CHAR', 'NCHAR', 'RAW')
+           then c.data_type || '(' ||
+                case when c.char_length > 0 then c.char_length else c.data_length end || ')'
+         when c.data_type = 'NUMBER' and c.data_precision is not null
+           then 'NUMBER(' || c.data_precision ||
+                case when c.data_scale <> 0 then ',' || c.data_scale end || ')'
+         when c.data_type = 'FLOAT' and c.data_precision is not null
+           then 'FLOAT(' || c.data_precision || ')'
+         else c.data_type end,
+       c.nullable, c.virtual_column, to_char(c.column_id)
+  from resolved r
+  join all_tab_cols c on c.owner = r.owner and c.table_name = r.name
+ where r.kind = 'TABLE' and c.hidden_column = 'NO' and c.column_id is not null
+union all
+select 'K', k.constraint_type, k.constraint_name, kc.column_name,
+       cast(null as varchar2(3)), to_char(kc.position)
+  from resolved r
+  join all_constraints k on k.owner = r.owner and k.table_name = r.name
+  join all_cons_columns kc on kc.owner = k.owner
+       and kc.constraint_name = k.constraint_name and kc.table_name = k.table_name
+ where r.kind = 'TABLE' and k.constraint_type in ('P', 'U') and k.status = 'ENABLED'";
+
+fn lookup_table(
+    conn: &Connection,
+    schema: Option<&str>,
+    name: &str,
+) -> Result<Lookup, oracledb::Error> {
+    let schema = schema.map(str::to_string);
+    let name = name.to_string();
+    let schema_bind: &dyn oracledb::ToDbValue = match &schema {
+        Some(s) => s,
+        None => &oracledb::DB_TYPE_VARCHAR,
+    };
+    let cursor = conn.query(LOOKUP_SQL, &[schema_bind, &name, schema_bind, &name, &name])?;
+    let mut rows = Vec::new();
+    for row in cursor {
+        let row = row?;
+        let mut cells = Vec::with_capacity(6);
+        for i in 0..6 {
+            cells.push(row.get::<Option<String>>(i)?.unwrap_or_default());
+        }
+        rows.push(cells);
+    }
+    Ok(table_info(&name, rows))
+}
+
+/// Builds the table description from the rows of [`LOOKUP_SQL`].
+fn table_info(written: &str, rows: Vec<Vec<String>>) -> Lookup {
+    let mut kinds = Vec::new();
+    let mut target = None;
+    let mut columns: Vec<(u32, TableColumn)> = Vec::new();
+    // (type, name) -> [(position, column)], ordered by constraint name.
+    let mut constraints: std::collections::BTreeMap<(String, String), Vec<(u32, String)>> =
+        Default::default();
+    for r in rows {
+        match r[0].as_str() {
+            "O" => {
+                if r[1] == "TABLE" {
+                    target = Some((r[2].clone(), r[3].clone()));
+                }
+                kinds.push(r[1].clone());
+            }
+            "C" => columns.push((
+                r[5].parse().unwrap_or(u32::MAX),
+                TableColumn {
+                    name: r[1].clone(),
+                    type_name: r[2].clone(),
+                    nullable: r[3] != "N",
+                    generated: r[4] == "YES",
+                },
+            )),
+            "K" => constraints
+                .entry((r[1].clone(), r[2].clone()))
+                .or_default()
+                .push((r[5].parse().unwrap_or(u32::MAX), r[3].clone())),
+            _ => {}
+        }
+    }
+    let has = |k: &str| kinds.iter().any(|x| x == k);
+    if has("MATERIALIZED VIEW") {
+        return Lookup::ReadOnly(format!("Read-only: {written} is a materialized view."));
+    }
+    if has("REMOTE") {
+        return Lookup::ReadOnly(RO_REMOTE.into());
+    }
+    if has("VIEW") {
+        return Lookup::ReadOnly(format!(
+            "Read-only: {written} is a view; only tables can be edited."
+        ));
+    }
+    let Some((owner, name)) = target else {
+        return Lookup::ReadOnly(RO_TABLE.into());
+    };
+    columns.sort_by_key(|(id, _)| *id);
+    let columns: Vec<TableColumn> = columns.into_iter().map(|(_, c)| c).collect();
+
+    // The primary key, else the narrowest unique key on NOT NULL columns.
+    let mut keys: Vec<(bool, Vec<String>)> = constraints
+        .into_iter()
+        .map(|((kind, _), mut cols)| {
+            cols.sort_by_key(|(pos, _)| *pos);
+            (kind == "P", cols.into_iter().map(|(_, c)| c).collect())
+        })
+        .filter(|(primary, cols): &(bool, Vec<String>)| {
+            *primary
+                || cols
+                    .iter()
+                    .all(|k| columns.iter().any(|c| c.name == *k && !c.nullable))
+        })
+        .collect();
+    keys.sort_by_key(|(primary, cols)| (!*primary, cols.len()));
+    let Some((primary, key)) = keys.into_iter().next() else {
+        return Lookup::ReadOnly(format!("Read-only: table {name} has no primary key."));
+    };
+    Lookup::Table(TableInfo {
+        owner,
+        name,
+        columns,
+        key,
+        primary,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Applying grid changes
+// ---------------------------------------------------------------------------
+
+/// Largest string or RAW value bound as one value (the PL/SQL limit).
+const MAX_BIND_BYTES: usize = 32767;
+/// Digits an Oracle NUMBER mantissa can hold.
+const NUMBER_DIGITS: usize = 40;
+
+/// How a column's text is converted and bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ColType {
+    Number,
+    BinaryFloat,
+    BinaryDouble,
+    Date,
+    Timestamp,
+    TimestampTz,
+    Text,
+    Binary,
+    Bool,
+}
+
+/// Types the grid can write. TIMESTAMP WITH LOCAL TIME ZONE, intervals,
+/// LONG, JSON, objects and the like stay read-only.
+fn col_type(type_name: &str) -> Option<ColType> {
+    let t = type_name.trim().to_ascii_uppercase();
+    if t.starts_with("TIMESTAMP") {
+        return if t.contains("LOCAL") {
+            None
+        } else if t.contains("TIME ZONE") {
+            Some(ColType::TimestampTz)
+        } else {
+            Some(ColType::Timestamp)
+        };
+    }
+    let base = t.split(['(', ' ']).next().unwrap_or_default();
+    Some(match base {
+        "NUMBER" | "FLOAT" | "INTEGER" | "DECIMAL" => ColType::Number,
+        "BINARY_FLOAT" => ColType::BinaryFloat,
+        "BINARY_DOUBLE" => ColType::BinaryDouble,
+        "DATE" => ColType::Date,
+        "VARCHAR2" | "NVARCHAR2" | "VARCHAR" | "CHAR" | "NCHAR" | "CLOB" | "NCLOB" => ColType::Text,
+        "RAW" | "BLOB" => ColType::Binary,
+        "BOOLEAN" => ColType::Bool,
+        _ => return None,
+    })
+}
+
+enum Bind {
+    Text(String),
+    Number(OracleNumber),
+    Float(f32),
+    Double(f64),
+    Time(OracleTimestamp),
+    Raw(Vec<u8>),
+    Bool(bool),
+}
+
+impl Bind {
+    fn value(&self) -> &dyn oracledb::ToDbValue {
+        match self {
+            Bind::Text(v) => v,
+            Bind::Number(v) => v,
+            Bind::Float(v) => v,
+            Bind::Double(v) => v,
+            Bind::Time(v) => v,
+            Bind::Raw(v) => v,
+            Bind::Bool(v) => v,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Update,
+    Delete,
+    Insert,
+}
+
+struct Planned {
+    /// 1-based index of the change.
+    row: usize,
+    op: Op,
+    sql: String,
+    binds: Vec<Bind>,
+}
+
+/// A number from its text: exact digits for an `OracleNumber` bind, or
+/// `<digits>E<exponent>` for `to_number`, which has no decimal or group
+/// character and so does not depend on NLS settings.
+enum NumberText {
+    Exact(OracleNumber),
+    Scientific(String),
+}
+
+/// Parses `[-+]digits[.digits]`. Integers ending in zeros go through
+/// `to_number`: the driver encodes their trailing zero digits instead of
+/// dropping them, which is not Oracle's canonical NUMBER form.
+fn parse_number(text: &str) -> Option<NumberText> {
+    let s = text.trim();
+    let (negative, body) = match s.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, s.strip_prefix('+').unwrap_or(s)),
+    };
+    let (int, frac) = body.split_once('.').unwrap_or((body, ""));
+    if (int.is_empty() && frac.is_empty())
+        || !int.bytes().all(|b| b.is_ascii_digit())
+        || !frac.bytes().all(|b| b.is_ascii_digit())
+    {
+        return None;
+    }
+    let int = int.trim_start_matches('0');
+    let frac = frac.trim_end_matches('0');
+    let sign = if negative { "-" } else { "" };
+    if frac.is_empty() && int.is_empty() {
+        return "0".parse().ok().map(NumberText::Exact);
+    }
+    if frac.is_empty() && int.ends_with('0') {
+        let mantissa = int.trim_end_matches('0');
+        if mantissa.len() > NUMBER_DIGITS {
+            return None;
+        }
+        let exponent = int.len() - mantissa.len();
+        return Some(NumberText::Scientific(format!(
+            "{sign}{mantissa}E{exponent}"
+        )));
+    }
+    if int.len() + frac.len() > NUMBER_DIGITS {
+        // Leading zeros of the fraction do not count as digits.
+        let digits = if int.is_empty() {
+            frac.trim_start_matches('0').len()
+        } else {
+            int.len() + frac.len()
+        };
+        if digits > NUMBER_DIGITS {
+            return None;
+        }
+    }
+    let int = if int.is_empty() { "0" } else { int };
+    let text = if frac.is_empty() {
+        format!("{sign}{int}")
+    } else {
+        format!("{sign}{int}.{frac}")
+    };
+    text.parse().ok().map(NumberText::Exact)
+}
+
+/// Parses the format [`timestamp`] prints:
+/// `YYYY-MM-DD[ HH:MI:SS[.fffffffff]][ +HH:MM]` (`T` may separate date and
+/// time). Returns the offset as `+HH:MM`.
+fn parse_timestamp(text: &str) -> Option<(OracleTimestamp, Option<String>)> {
+    fn num(s: &str) -> Option<u32> {
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        s.parse().ok()
+    }
+    let s = text.trim();
+    let date = s.get(..10)?;
+    if date.as_bytes()[4] != b'-' || date.as_bytes()[7] != b'-' {
+        return None;
+    }
+    let year = num(&date[..4])?;
+    let month = num(&date[5..7])?;
+    let day = num(&date[8..10])?;
+    if year == 0 {
+        return None;
+    }
+    chrono::NaiveDate::from_ymd_opt(year as i32, month, day)?;
+
+    let mut rest = &s[10..];
+    let (mut hour, mut minute, mut second, mut nanos) = (0, 0, 0, 0);
+    let b = rest.as_bytes();
+    if b.len() >= 9 && matches!(b[0], b' ' | b'T') && b[3] == b':' && b[6] == b':' {
+        hour = num(rest.get(1..3)?)?;
+        minute = num(rest.get(4..6)?)?;
+        second = num(rest.get(7..9)?)?;
+        if hour > 23 || minute > 59 || second > 59 {
+            return None;
+        }
+        rest = rest.get(9..)?;
+        if let Some(f) = rest.strip_prefix('.') {
+            let digits = f.bytes().take_while(u8::is_ascii_digit).count();
+            if digits == 0 || digits > 9 {
+                return None;
+            }
+            nanos = num(&f[..digits])? * 10u32.pow((9 - digits) as u32);
+            rest = &f[digits..];
+        }
+    }
+    let rest = rest.trim_start();
+    let tz = if rest.is_empty() {
+        None
+    } else {
+        let b = rest.as_bytes();
+        if b.len() != 6 || !matches!(b[0], b'+' | b'-') || b[3] != b':' {
+            return None;
+        }
+        let hh = num(rest.get(1..3)?)?;
+        let mm = num(rest.get(4..6)?)?;
+        if hh > 14 || mm > 59 {
+            return None;
+        }
+        Some(rest.to_string())
+    };
+    let t = OracleTimestamp::new_timestamp(
+        year as i16,
+        month as u8,
+        day as u8,
+        hour as u8,
+        minute as u8,
+        second as u8,
+        nanos,
+    );
+    Some((t, tz))
+}
+
+fn parse_hex(text: &str) -> Option<Vec<u8>> {
+    let s = text.trim();
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+fn parse_bool(text: &str) -> Option<bool> {
+    match text.trim().to_ascii_uppercase().as_str() {
+        "TRUE" | "1" => Some(true),
+        "FALSE" | "0" => Some(false),
+        _ => None,
+    }
+}
+
+/// Quoted identifier. Oracle names cannot contain double quotes.
+fn quote_ident(name: &str) -> AppResult<String> {
+    if name.is_empty() || name.contains(['"', '\0']) {
+        return Err(AppError::invalid(format!("Invalid name: {name}")));
+    }
+    Ok(format!("\"{name}\""))
+}
+
+fn too_long(name: &str) -> AppError {
+    AppError::invalid(format!(
+        "Column {name}: values longer than {MAX_BIND_BYTES} bytes cannot be saved from the grid."
+    ))
+}
+
+/// Binds of one statement, numbered in order of appearance.
+#[derive(Default)]
+struct SqlBuilder {
+    binds: Vec<Bind>,
+}
+
+impl SqlBuilder {
+    fn bind(&mut self, b: Bind) -> String {
+        self.binds.push(b);
+        format!(":{}", self.binds.len())
+    }
+
+    /// SQL expression for a value of `col`: a typed bind, wrapped where the
+    /// bind type alone does not say enough.
+    fn value(&mut self, col: &EditColumn, text: &str) -> AppResult<String> {
+        let name = &col.name;
+        let ty = col_type(&col.type_name)
+            .ok_or_else(|| AppError::invalid(format!("Column {name} cannot be edited here.")))?;
+        let bad = |what: &str| {
+            AppError::invalid(format!("Column {name}: '{text}' is not a valid {what}."))
+        };
+        Ok(match ty {
+            ColType::Number => match parse_number(text).ok_or_else(|| bad("number"))? {
+                NumberText::Exact(n) => self.bind(Bind::Number(n)),
+                NumberText::Scientific(s) => format!("to_number({})", self.bind(Bind::Text(s))),
+            },
+            ColType::BinaryFloat => {
+                let v = text.trim().parse::<f32>().map_err(|_| bad("number"))?;
+                self.bind(Bind::Float(v))
+            }
+            ColType::BinaryDouble => {
+                let v = text.trim().parse::<f64>().map_err(|_| bad("number"))?;
+                self.bind(Bind::Double(v))
+            }
+            ColType::Date => match parse_timestamp(text) {
+                Some((t, None)) if t.nanoseconds() == 0 => {
+                    format!("cast({} as date)", self.bind(Bind::Time(t)))
+                }
+                _ => return Err(bad("date (YYYY-MM-DD HH:MI:SS)")),
+            },
+            ColType::Timestamp => match parse_timestamp(text) {
+                Some((t, None)) => self.bind(Bind::Time(t)),
+                _ => return Err(bad("timestamp (YYYY-MM-DD HH:MI:SS.FF)")),
+            },
+            ColType::TimestampTz => match parse_timestamp(text) {
+                Some((t, Some(tz))) => {
+                    let ts = self.bind(Bind::Time(t));
+                    let tz = self.bind(Bind::Text(tz));
+                    format!("from_tz({ts}, {tz})")
+                }
+                _ => {
+                    return Err(bad(
+                        "timestamp with time zone (YYYY-MM-DD HH:MI:SS.FF +HH:MM)",
+                    ))
+                }
+            },
+            ColType::Text => {
+                if text.len() > MAX_BIND_BYTES {
+                    return Err(too_long(name));
+                }
+                self.bind(Bind::Text(text.to_string()))
+            }
+            ColType::Binary => {
+                if text.contains("… (") {
+                    return Err(AppError::invalid(
+                        "This value is only a preview and cannot be saved.",
+                    ));
+                }
+                let bytes = parse_hex(text).ok_or_else(|| bad("hexadecimal value"))?;
+                if bytes.len() > MAX_BIND_BYTES {
+                    return Err(too_long(name));
+                }
+                self.bind(Bind::Raw(bytes))
+            }
+            ColType::Bool => {
+                let v = parse_bool(text).ok_or_else(|| bad("boolean (TRUE or FALSE)"))?;
+                self.bind(Bind::Bool(v))
+            }
+        })
+    }
+
+    fn value_or_null(&mut self, col: &EditColumn, value: &Option<String>) -> AppResult<String> {
+        match value {
+            Some(text) => self.value(col, text),
+            None => Ok("null".into()),
+        }
+    }
+
+    /// `k1 = :n and k2 is null ...`
+    fn key_filter(
+        &mut self,
+        key_cols: &[&EditColumn],
+        key: &[Option<String>],
+    ) -> AppResult<String> {
+        if key.len() != key_cols.len() {
+            return Err(AppError::invalid("The row key does not match the result."));
+        }
+        let mut parts = Vec::with_capacity(key.len());
+        for (col, value) in key_cols.iter().zip(key) {
+            let ident = quote_ident(&col.name)?;
+            parts.push(match value {
+                Some(text) => format!("{ident} = {}", self.value(col, text)?),
+                None => format!("{ident} is null"),
+            });
+        }
+        Ok(parts.join(" and "))
+    }
+}
+
+fn edit_column(target: &EditTarget, index: usize) -> AppResult<&EditColumn> {
+    target
+        .columns
+        .get(index)
+        .and_then(Option::as_ref)
+        .ok_or_else(|| AppError::invalid(format!("Result column {} cannot be edited.", index + 1)))
+}
+
+/// Values by table column; a column given twice keeps the last value.
+fn change_values<'a>(
+    target: &'a EditTarget,
+    values: &'a [CellValue],
+) -> AppResult<Vec<(&'a EditColumn, &'a Option<String>)>> {
+    let mut out: Vec<(&EditColumn, &Option<String>)> = Vec::with_capacity(values.len());
+    for v in values {
+        let col = edit_column(target, v.column)?;
+        match out.iter_mut().find(|(c, _)| c.name == col.name) {
+            Some(slot) => slot.1 = &v.value,
+            None => out.push((col, &v.value)),
+        }
+    }
+    Ok(out)
+}
+
+/// Builds every statement before anything runs, so bad input changes nothing.
+fn plan_changes(req: &ApplyRequest) -> AppResult<Vec<Planned>> {
+    let target = &req.target;
+    let table = match &target.schema {
+        Some(schema) => format!("{}.{}", quote_ident(schema)?, quote_ident(&target.table)?),
+        None => quote_ident(&target.table)?,
+    };
+    let key_cols = target
+        .key
+        .iter()
+        .map(|&i| edit_column(target, i))
+        .collect::<AppResult<Vec<_>>>()?;
+    let mut planned = Vec::with_capacity(req.changes.len());
+    for (n, change) in req.changes.iter().enumerate() {
+        let mut b = SqlBuilder::default();
+        let (op, sql) = match change {
+            RowChange::Update { key, values } => {
+                let values = change_values(target, values)?;
+                if values.is_empty() {
+                    continue;
+                }
+                let mut sets = Vec::with_capacity(values.len());
+                for (col, value) in values {
+                    let expr = b.value_or_null(col, value)?;
+                    sets.push(format!("{} = {expr}", quote_ident(&col.name)?));
+                }
+                let filter = b.key_filter(&key_cols, key)?;
+                let sql = format!("update {table} set {} where {filter}", sets.join(", "));
+                (Op::Update, sql)
+            }
+            RowChange::Delete { key } => {
+                let filter = b.key_filter(&key_cols, key)?;
+                (Op::Delete, format!("delete from {table} where {filter}"))
+            }
+            RowChange::Insert { values } => {
+                let values = change_values(target, values)?;
+                let sql = if values.is_empty() {
+                    // Oracle has no DEFAULT VALUES: name one column as DEFAULT.
+                    let col =
+                        target.columns.iter().flatten().next().ok_or_else(|| {
+                            AppError::invalid("This result has no editable columns.")
+                        })?;
+                    let ident = quote_ident(&col.name)?;
+                    format!("insert into {table} ({ident}) values (default)")
+                } else {
+                    let mut names = Vec::with_capacity(values.len());
+                    let mut exprs = Vec::with_capacity(values.len());
+                    for (col, value) in values {
+                        names.push(quote_ident(&col.name)?);
+                        exprs.push(b.value_or_null(col, value)?);
+                    }
+                    format!(
+                        "insert into {table} ({}) values ({})",
+                        names.join(", "),
+                        exprs.join(", ")
+                    )
+                };
+                (Op::Insert, sql)
+            }
+        };
+        planned.push(Planned {
+            row: n + 1,
+            op,
+            sql,
+            binds: b.binds,
+        });
+    }
+    Ok(planned)
+}
+
+fn not_saved(row: usize, matched: u64) -> AppError {
+    let message = if matched == 0 {
+        format!(
+            "Row {row} was not saved: 0 rows matched its key (changed or removed by someone else)."
+        )
+    } else {
+        format!("Row {row} was not saved: {matched} rows matched its key.")
+    };
+    AppError::new(ErrorKind::Database, message)
+}
+
+fn run_changes(conn: &Connection, planned: &[Planned], out: &mut ApplyResult) -> AppResult<()> {
+    for p in planned {
+        let binds: Vec<&dyn oracledb::ToDbValue> = p.binds.iter().map(Bind::value).collect();
+        let affected = conn
+            .execute(&p.sql, &binds)
+            .map_err(map_error)?
+            .rows_affected();
+        if affected != 1 {
+            return Err(not_saved(p.row, affected));
+        }
+        match p.op {
+            Op::Update => out.updated += 1,
+            Op::Delete => out.deleted += 1,
+            Op::Insert => out.inserted += 1,
+        }
+    }
+    Ok(())
+}
+
+fn apply_blocking(
+    conn: &Connection,
+    req: &ApplyRequest,
+    state: &Mutex<TxState>,
+) -> AppResult<ApplyResult> {
+    let started = Instant::now();
+    let planned = plan_changes(req)?;
+    let autocommit = state.lock().autocommit;
+    if !autocommit {
+        // On failure only these changes are undone; earlier work of the open
+        // transaction stays.
+        conn.execute("savepoint lq_grid_apply", &[])
+            .map_err(map_error)?;
+    }
+    let mut out = ApplyResult::default();
+    if let Err(e) = run_changes(conn, &planned, &mut out) {
+        if autocommit {
+            let _ = conn.rollback();
+        } else {
+            let _ = conn.execute("rollback to savepoint lq_grid_apply", &[]);
+        }
+        return Err(e);
+    }
+    if autocommit {
+        if let Err(e) = conn.commit() {
+            let _ = conn.rollback();
+            return Err(map_error(e));
+        }
+        state.lock().in_transaction = false;
+    } else if !planned.is_empty() {
+        state.lock().in_transaction = true;
+    }
+    out.elapsed_ms = started.elapsed().as_millis() as u64;
+    out.in_transaction = state.lock().in_transaction;
+    Ok(out)
+}
+
 fn connection_error(e: oracledb::Error) -> AppError {
     let mut err = map_error(e);
     err.kind = ErrorKind::Connection;
@@ -755,5 +2016,888 @@ mod tests {
         assert!(!is_plsql(
             "create or replace view v as select 1 x from dual"
         ));
+    }
+
+    // --- Editable results: pure helpers ---
+
+    fn col(name: &str, type_name: &str) -> TableColumn {
+        TableColumn {
+            name: name.into(),
+            type_name: type_name.into(),
+            nullable: true,
+            generated: false,
+        }
+    }
+
+    fn edit_col(name: &str, type_name: &str) -> Option<EditColumn> {
+        Some(EditColumn {
+            name: name.into(),
+            type_name: type_name.into(),
+        })
+    }
+
+    #[test]
+    fn parses_single_table_selects() {
+        let s = parse_select(
+            "select /*+ first_rows */ id, t.name, qty * 2 as dbl, q'[it's, from]' lit -- x\n from lq t where x = 'a, from' order by 1",
+        )
+        .unwrap();
+        assert_eq!(s.schema, None);
+        assert_eq!(s.table, "LQ");
+        assert_eq!(s.alias.as_deref(), Some("T"));
+        assert_eq!(
+            s.items,
+            [
+                SelItem::Column {
+                    qual: vec![],
+                    name: "ID".into(),
+                    alias: None
+                },
+                SelItem::Column {
+                    qual: vec!["T".into()],
+                    name: "NAME".into(),
+                    alias: None
+                },
+                SelItem::Expr,
+                SelItem::Expr,
+            ]
+        );
+
+        let s = parse_select(r#"select m.*, "Some Col" as "x" from app."My Tab" m for update"#)
+            .unwrap();
+        assert_eq!(s.schema.as_deref(), Some("APP"));
+        assert_eq!(s.table, "My Tab");
+        assert_eq!(
+            s.items,
+            [
+                SelItem::Star(vec!["M".into()]),
+                SelItem::Column {
+                    qual: vec![],
+                    name: "Some Col".into(),
+                    alias: Some("x".into())
+                },
+            ]
+        );
+
+        // A subquery in WHERE does not change where the rows come from.
+        assert!(parse_select(
+            "select * from t where id in (select id from u group by id) fetch first 5 rows only"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_other_query_shapes() {
+        let cases = [
+            ("select a.id from a join b on a.id = b.id", RO_JOIN),
+            ("select * from a, b", RO_JOIN),
+            ("select * from a left outer join b using (id)", RO_JOIN),
+            ("select * from (select 1 x from dual)", RO_TABLE),
+            ("select * from table(f())", RO_TABLE),
+            ("with q as (select 1 from dual) select * from q", RO_TABLE),
+            ("select distinct x from t", RO_GROUPED),
+            ("select x, count(*) from t group by x", RO_GROUPED),
+            ("select x from t having count(*) > 1", RO_GROUPED),
+            ("select x from t union all select x from u", RO_SET),
+            ("select x from t where a = 1 minus select x from u", RO_SET),
+            ("select level from t connect by level < 3", RO_COMPLEX),
+            ("select * from t as of scn 1", RO_COMPLEX),
+            ("select * from t sample (10)", RO_COMPLEX),
+            ("select * from t pivot (sum(v) for k in (1))", RO_COMPLEX),
+            ("select * from t@remote", RO_REMOTE),
+            ("update t set x = 1", RO_TABLE),
+            ("select 'unclosed from t", RO_COMPLEX),
+        ];
+        for (sql, reason) in cases {
+            assert_eq!(parse_select(sql), Err(reason), "{sql}");
+        }
+    }
+
+    fn sample_table() -> TableInfo {
+        let mut gen = col("TOTAL", "NUMBER");
+        gen.generated = true;
+        TableInfo {
+            owner: "APP".into(),
+            name: "ORDERS".into(),
+            columns: vec![
+                col("ID", "NUMBER(10)"),
+                col("NAME", "VARCHAR2(50)"),
+                gen,
+                col("SEEN", "TIMESTAMP(6) WITH LOCAL TIME ZONE"),
+            ],
+            key: vec!["ID".into()],
+            primary: true,
+        }
+    }
+
+    #[test]
+    fn maps_result_columns_to_the_table() {
+        let info = sample_table();
+        let shape = parse_select("select name, o.id, id + 1, total from orders o").unwrap();
+        let t = map_columns(&shape, &info, &["NAME", "ID", "ID+1", "TOTAL"]).unwrap();
+        assert_eq!(t.schema.as_deref(), Some("APP"));
+        assert_eq!(t.table, "ORDERS");
+        assert_eq!(t.key, [1]);
+        assert_eq!(t.columns[0].as_ref().unwrap().name, "NAME");
+        assert_eq!(t.columns[1].as_ref().unwrap().type_name, "NUMBER(10)");
+        // Expression, virtual column.
+        assert!(t.columns[2].is_none());
+        assert!(t.columns[3].is_none());
+
+        let shape = parse_select("select * from orders").unwrap();
+        let t = map_columns(&shape, &info, &["ID", "NAME", "TOTAL", "SEEN"]).unwrap();
+        assert_eq!(t.key, [0]);
+        // TIMESTAMP WITH LOCAL TIME ZONE stays read-only.
+        assert!(t.columns[3].is_none());
+
+        // The result must line up with what the text says.
+        assert!(map_columns(&shape, &info, &["ID", "NAME"]).is_err());
+        let shape = parse_select("select id x from orders").unwrap();
+        assert!(map_columns(&shape, &info, &["ID"]).is_err());
+        assert!(map_columns(&shape, &info, &["X"]).is_ok());
+
+        let shape = parse_select("select name from orders").unwrap();
+        let reason = map_columns(&shape, &info, &["NAME"]).unwrap_err();
+        assert_eq!(
+            reason,
+            "Read-only: add the primary key columns (ID) to the query to edit rows."
+        );
+
+        // A qualifier that is not the table is not one of its columns.
+        let shape = parse_select("select s.id, id from orders").unwrap();
+        let t = map_columns(&shape, &info, &["ID", "ID"]).unwrap();
+        assert!(t.columns[0].is_none());
+        assert_eq!(t.key, [1]);
+    }
+
+    fn row(cells: &[&str]) -> Vec<String> {
+        cells.iter().map(|c| c.to_string()).collect()
+    }
+
+    #[test]
+    fn chooses_the_table_key() {
+        let rows = vec![
+            row(&["O", "TABLE", "APP", "T", "", ""]),
+            row(&["C", "B", "VARCHAR2(10)", "N", "NO", "2"]),
+            row(&["C", "A", "NUMBER", "Y", "NO", "1"]),
+            row(&["C", "C", "NUMBER", "N", "NO", "3"]),
+            row(&["K", "U", "T_A", "A", "", "1"]),
+            row(&["K", "U", "T_BC", "C", "", "2"]),
+            row(&["K", "U", "T_BC", "B", "", "1"]),
+        ];
+        let Lookup::Table(info) = table_info("T", rows.clone()) else {
+            panic!("not a table")
+        };
+        assert_eq!(
+            info.columns
+                .iter()
+                .map(|c| c.name.as_str())
+                .collect::<Vec<_>>(),
+            ["A", "B", "C"]
+        );
+        // T_A is on a nullable column.
+        assert_eq!(info.key, ["B", "C"]);
+        assert!(!info.primary);
+
+        let mut with_pk = rows.clone();
+        with_pk.push(row(&["K", "P", "T_PK", "A", "", "1"]));
+        let Lookup::Table(info) = table_info("T", with_pk) else {
+            panic!("not a table")
+        };
+        assert_eq!(info.key, ["A"]);
+        assert!(info.primary);
+
+        let Lookup::ReadOnly(reason) = table_info("T", rows[..4].to_vec()) else {
+            panic!("editable without a key")
+        };
+        assert_eq!(reason, "Read-only: table T has no primary key.");
+
+        let Lookup::ReadOnly(reason) =
+            table_info("V", vec![row(&["O", "VIEW", "APP", "V", "", ""])])
+        else {
+            panic!("view")
+        };
+        assert!(reason.contains("view"), "{reason}");
+        assert!(matches!(table_info("X", vec![]), Lookup::ReadOnly(_)));
+    }
+
+    fn number(text: &str) -> String {
+        match parse_number(text).unwrap_or_else(|| panic!("{text}")) {
+            NumberText::Exact(n) => n.to_string(),
+            NumberText::Scientific(s) => format!("sci {s}"),
+        }
+    }
+
+    #[test]
+    fn converts_numbers_without_nls() {
+        assert_eq!(number("123.4500"), "123.45");
+        assert_eq!(number("-0.001"), "-0.001");
+        assert_eq!(number(".5"), "0.5");
+        assert_eq!(number("+7"), "7");
+        assert_eq!(number("0"), "0");
+        assert_eq!(number("-0.0"), "0");
+        assert_eq!(number("15"), "15");
+        assert_eq!(
+            number("12345678901234567890.123456789"),
+            "12345678901234567890.123456789"
+        );
+        assert_eq!(number("100"), "sci 1E2");
+        assert_eq!(number("-1000"), "sci -1E3");
+        assert_eq!(number(&format!("1{}", "0".repeat(125))), "sci 1E125");
+        assert_eq!(
+            number(&format!("0.{}1", "0".repeat(120))),
+            format!("0.{}1", "0".repeat(120))
+        );
+        for bad in ["", "-", "abc", "1e5", "1,5", "1.2.3", " ", &"9".repeat(41)] {
+            assert!(parse_number(bad).is_none(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn parses_displayed_timestamps() {
+        let (t, tz) = parse_timestamp("2024-05-01 13:45:07").unwrap();
+        assert_eq!(
+            (
+                t.year(),
+                t.month(),
+                t.day(),
+                t.hour(),
+                t.minute(),
+                t.second()
+            ),
+            (2024, 5, 1, 13, 45, 7)
+        );
+        assert_eq!((t.nanoseconds(), tz), (0, None));
+        let (t, _) = parse_timestamp("2024-05-01 13:45:07.123").unwrap();
+        assert_eq!(t.nanoseconds(), 123_000_000);
+        let (t, tz) = parse_timestamp("2024-05-01 13:45:07.123456789 -06:00").unwrap();
+        assert_eq!(t.nanoseconds(), 123_456_789);
+        assert_eq!(tz.as_deref(), Some("-06:00"));
+        let (t, _) = parse_timestamp("2024-05-01").unwrap();
+        assert_eq!((t.hour(), t.second()), (0, 0));
+        assert!(parse_timestamp("2024-05-01T13:45:07").is_some());
+        for bad in [
+            "2024-02-30 00:00:00",
+            "2024-05-01 24:00:00",
+            "2024-05-01 13:45",
+            "2024-05-01 13:45:07.",
+            "2024-05-01 13:45:07 +3",
+            "01/05/2024",
+            "",
+        ] {
+            assert!(parse_timestamp(bad).is_none(), "{bad}");
+        }
+
+        // What `timestamp` prints parses back to the same value.
+        let t = OracleTimestamp::new_timestamp(1999, 12, 31, 23, 59, 58, 120_000_000);
+        let shown = timestamp(&t, 6, false);
+        assert_eq!(shown, "1999-12-31 23:59:58.120000");
+        assert_eq!(parse_timestamp(&shown).unwrap().0, t);
+    }
+
+    #[test]
+    fn shows_time_zone_values_in_local_time() {
+        // The driver hands over UTC plus the offset.
+        let utc = OracleTimestamp::new_timestamp_tz(2025, 10, 31, 17, 52, 15, 456_000_000, -6, 0);
+        assert_eq!(timestamp(&utc, 3, true), "2025-10-31 11:52:15.456 -06:00");
+        let utc = OracleTimestamp::new_timestamp_tz(2024, 1, 1, 2, 0, 0, 0, -3, -30);
+        assert_eq!(timestamp(&utc, 0, true), "2023-12-31 22:30:00 -03:30");
+        let utc = OracleTimestamp::new_timestamp_tz(2024, 2, 28, 20, 0, 0, 0, 5, 30);
+        assert_eq!(timestamp(&utc, 0, true), "2024-02-29 01:30:00 +05:30");
+    }
+
+    #[test]
+    fn parses_binary_and_bool() {
+        assert_eq!(parse_hex("DEADbeef"), Some(vec![0xDE, 0xAD, 0xBE, 0xEF]));
+        assert_eq!(parse_hex(""), Some(vec![]));
+        assert_eq!(parse_hex("ABC"), None);
+        assert_eq!(parse_hex("ZZ"), None);
+        assert_eq!(parse_bool("true"), Some(true));
+        assert_eq!(parse_bool("FALSE"), Some(false));
+        assert_eq!(parse_bool("yes"), None);
+    }
+
+    fn sample_target() -> EditTarget {
+        EditTarget {
+            schema: Some("APP".into()),
+            table: "My Tab".into(),
+            columns: vec![
+                edit_col("ID", "NUMBER(10)"),
+                edit_col("Some Value", "VARCHAR2(20)"),
+                None,
+                edit_col("D", "DATE"),
+                edit_col("TZ", "TIMESTAMP(6) WITH TIME ZONE"),
+                edit_col("BIN", "BLOB"),
+                edit_col("F", "BINARY_DOUBLE"),
+            ],
+            key: vec![0],
+        }
+    }
+
+    fn cv(column: usize, value: Option<&str>) -> CellValue {
+        CellValue {
+            column,
+            value: value.map(str::to_string),
+        }
+    }
+
+    fn plan(changes: Vec<RowChange>) -> AppResult<Vec<Planned>> {
+        plan_changes(&ApplyRequest {
+            target: sample_target(),
+            changes,
+        })
+    }
+
+    #[test]
+    fn builds_statements_with_binds() {
+        let p = plan(vec![
+            RowChange::Update {
+                key: vec![Some("10".into())],
+                values: vec![cv(1, Some("x")), cv(3, None), cv(1, Some("it's"))],
+            },
+            RowChange::Delete { key: vec![None] },
+            RowChange::Insert { values: vec![] },
+            RowChange::Insert {
+                values: vec![
+                    cv(3, Some("2024-02-29 13:00:00")),
+                    cv(4, Some("2024-02-29 13:00:00.5 +03:00")),
+                    cv(6, Some("Inf")),
+                ],
+            },
+            RowChange::Update {
+                key: vec![Some("7".into())],
+                values: vec![],
+            },
+        ])
+        .unwrap();
+        assert_eq!(p.len(), 4);
+        assert_eq!(
+            p[0].sql,
+            r#"update "APP"."My Tab" set "Some Value" = :1, "D" = null where "ID" = to_number(:2)"#
+        );
+        assert!(matches!(&p[0].binds[0], Bind::Text(s) if s == "it's"));
+        assert!(matches!(&p[0].binds[1], Bind::Text(s) if s == "1E1"));
+        assert_eq!(p[1].sql, r#"delete from "APP"."My Tab" where "ID" is null"#);
+        assert_eq!(p[1].op, Op::Delete);
+        assert_eq!(
+            p[2].sql,
+            r#"insert into "APP"."My Tab" ("ID") values (default)"#
+        );
+        assert_eq!(
+            p[3].sql,
+            r#"insert into "APP"."My Tab" ("D", "TZ", "F") values (cast(:1 as date), from_tz(:2, :3), :4)"#
+        );
+        assert!(matches!(&p[3].binds[2], Bind::Text(s) if s == "+03:00"));
+        assert!(matches!(&p[3].binds[3], Bind::Double(f) if f.is_infinite()));
+        assert_eq!(p[3].row, 4);
+    }
+
+    #[test]
+    fn rejects_bad_changes() {
+        let invalid = |changes: Vec<RowChange>| {
+            let err = plan(changes).err().expect("should fail");
+            assert_eq!(err.kind, ErrorKind::Invalid, "{err}");
+            err.message
+        };
+        // Expression column.
+        invalid(vec![RowChange::Insert {
+            values: vec![cv(2, Some("1"))],
+        }]);
+        invalid(vec![RowChange::Delete {
+            key: vec![Some("abc".into())],
+        }]);
+        invalid(vec![RowChange::Delete { key: vec![] }]);
+        invalid(vec![RowChange::Insert {
+            values: vec![cv(3, Some("2024-01-01 10:00:00.5"))],
+        }]);
+        invalid(vec![RowChange::Insert {
+            values: vec![cv(4, Some("2024-01-01 10:00:00"))],
+        }]);
+        let msg = invalid(vec![RowChange::Insert {
+            values: vec![cv(5, Some("DEADBEEF… (40000 bytes)"))],
+        }]);
+        assert_eq!(msg, "This value is only a preview and cannot be saved.");
+        let mut target = sample_target();
+        target.table = "bad\"name".into();
+        assert!(plan_changes(&ApplyRequest {
+            target,
+            changes: vec![RowChange::Delete {
+                key: vec![Some("1".into())]
+            }],
+        })
+        .is_err());
+    }
+
+    // --- Editable results against a real server (see integration_tests.rs) ---
+
+    fn ora_profile() -> Option<(ConnectionProfile, Option<String>)> {
+        let env = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
+        Some((
+            ConnectionProfile {
+                name: "test".into(),
+                engine: crate::model::Engine::Oracle,
+                host: env("LQ_ORA_HOST")?,
+                port: env("LQ_ORA_PORT")
+                    .and_then(|p| p.parse().ok())
+                    .unwrap_or(1521),
+                user: env("LQ_ORA_USER")?,
+                database: env("LQ_ORA_SERVICE").unwrap_or_else(|| "FREEPDB1".into()),
+                oracle_connect_type: OracleConnectType::Service,
+                ..Default::default()
+            },
+            env("LQ_ORA_PASSWORD"),
+        ))
+    }
+
+    async fn open() -> Option<OraSession> {
+        let (profile, pw) = ora_profile()?;
+        Some(connect(&profile, pw.as_deref()).await.expect("connection"))
+    }
+
+    async fn run(s: &OraSession, sql: &str) -> ExecResult {
+        s.execute(&ExecRequest {
+            sql: sql.into(),
+            max_rows: 100,
+        })
+        .await
+        .unwrap_or_else(|e| panic!("{sql}: {e}"))
+    }
+
+    async fn try_run(s: &OraSession, sql: &str) -> bool {
+        s.execute(&ExecRequest {
+            sql: sql.into(),
+            max_rows: 0,
+        })
+        .await
+        .is_ok()
+    }
+
+    fn target_of(r: &ExecResult) -> EditTarget {
+        r.editable
+            .clone()
+            .unwrap_or_else(|| panic!("read-only: {:?}", r.read_only_reason))
+    }
+
+    fn reason_of(r: &ExecResult) -> String {
+        assert!(r.editable.is_none(), "editable: {:?}", r.editable);
+        r.read_only_reason.clone().expect("a reason")
+    }
+
+    async fn apply(
+        s: &OraSession,
+        target: &EditTarget,
+        changes: Vec<RowChange>,
+    ) -> AppResult<ApplyResult> {
+        s.apply_changes(&ApplyRequest {
+            target: target.clone(),
+            changes,
+        })
+        .await
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn oracle_edit_detection() {
+        let Some(s) = open().await else { return };
+        for t in ["lq_edit_t", "lq_edit_nokey", "lq_edit_uk"] {
+            try_run(&s, &format!("drop table {t} purge")).await;
+        }
+        run(&s, "create table lq_edit_t (id number(10) primary key, name varchar2(50), qty number(10,2))").await;
+        run(&s, "create table lq_edit_nokey (a number, b varchar2(10))").await;
+        run(&s, "create table lq_edit_uk (code varchar2(10) not null, v number, constraint lq_edit_uk_u unique (code))").await;
+
+        let r = run(&s, "select id, name, qty * 2 as dbl from lq_edit_t").await;
+        let t = target_of(&r);
+        assert_eq!(t.table, "LQ_EDIT_T");
+        assert_eq!(t.schema, s.current_schema);
+        assert_eq!(t.key, [0]);
+        assert_eq!(t.columns[1].as_ref().unwrap().name, "NAME");
+        assert!(t.columns[2].is_none());
+
+        let r = run(
+            &s,
+            "select name, e.id from lq_edit_t e where id > 0 order by id",
+        )
+        .await;
+        assert_eq!(target_of(&r).key, [1]);
+        let r = run(&s, "select * from lq_edit_t").await;
+        let t = target_of(&r);
+        assert_eq!(t.key, [0]);
+        assert_eq!(t.columns[2].as_ref().unwrap().type_name, "NUMBER(10,2)");
+
+        let r = run(
+            &s,
+            "select a.id, b.name from lq_edit_t a join lq_edit_t b on a.id = b.id",
+        )
+        .await;
+        assert!(reason_of(&r).contains("several tables"));
+        let r = run(&s, "select * from lq_edit_nokey").await;
+        assert!(
+            reason_of(&r).contains("no primary key"),
+            "{:?}",
+            r.read_only_reason
+        );
+        let r = run(&s, "select name from lq_edit_t").await;
+        assert!(reason_of(&r).contains("(ID)"), "{:?}", r.read_only_reason);
+        let r = run(&s, "select v, code from lq_edit_uk").await;
+        assert_eq!(target_of(&r).key, [1]);
+        let r = run(&s, "select name, count(*) from lq_edit_t group by name").await;
+        reason_of(&r);
+        let r = run(&s, "select sysdate from dual").await;
+        reason_of(&r);
+        let r = run(&s, "insert into lq_edit_t (id) values (1)").await;
+        assert!(r.editable.is_none() && r.read_only_reason.is_none());
+
+        // Synonyms and views, when the test user may create them.
+        if try_run(&s, "create or replace synonym lq_edit_syn for lq_edit_t").await {
+            let r = run(&s, "select * from lq_edit_syn").await;
+            assert_eq!(target_of(&r).table, "LQ_EDIT_T");
+            try_run(&s, "drop synonym lq_edit_syn").await;
+        }
+        if try_run(
+            &s,
+            "create or replace view lq_edit_v as select * from lq_edit_t",
+        )
+        .await
+        {
+            let r = run(&s, "select * from lq_edit_v").await;
+            assert!(reason_of(&r).contains("view"));
+            try_run(&s, "drop view lq_edit_v").await;
+        }
+
+        for t in ["lq_edit_t", "lq_edit_nokey", "lq_edit_uk"] {
+            run(&s, &format!("drop table {t} purge")).await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn oracle_edit_round_trip_types() {
+        let Some(s) = open().await else { return };
+        try_run(&s, "drop table lq_edit_types purge").await;
+        run(
+            &s,
+            "create table lq_edit_types (
+               id number(10) primary key, n number(20,5), big number, i number(10),
+               f binary_float, d binary_double, dt date, ts timestamp(6), ts9 timestamp(9),
+               tz timestamp(3) with time zone, c varchar2(100), ch char(5), nc nvarchar2(20),
+               cl clob, r raw(16), bl blob)",
+        )
+        .await;
+        run(
+            &s,
+            "insert into lq_edit_types (id, n, big, i, f, d, dt, ts, ts9, tz, c, ch, nc, cl, r, bl)
+             values (10, 12345.678, 1e30, 1000, 1.5, 0.1, timestamp '2024-02-29 13:45:10',
+                     timestamp '2024-02-29 13:45:10.123456', timestamp '2024-02-29 13:45:10.123456789',
+                     timestamp '2024-02-29 13:45:10.250 -03:00', 'it''s' || chr(10) || 'two \"lines\"',
+                     'ab', 'olá', to_clob('long text' || chr(10) || 'x'), hextoraw('DEADBEEF'),
+                     hextoraw('00FF10'))",
+        )
+        .await;
+        run(&s, "insert into lq_edit_types (id) values (20)").await;
+        run(
+            &s,
+            "insert into lq_edit_types (id, n, f) values (7, -0.5, -2.25)",
+        )
+        .await;
+
+        let sql = "select * from lq_edit_types order by id";
+        let before = run(&s, sql).await;
+        let t = target_of(&before);
+        assert_eq!(t.key, [0]);
+        assert!(t.columns.iter().all(Option::is_some), "{:?}", t.columns);
+        let row10 = &before.rows[1];
+        assert_eq!(row10[0].as_deref(), Some("10"));
+        assert_eq!(
+            row10[2].as_deref(),
+            Some(format!("1{}", "0".repeat(30)).as_str())
+        );
+        assert_eq!(row10[6].as_deref(), Some("2024-02-29 13:45:10"));
+        assert_eq!(row10[9].as_deref(), Some("2024-02-29 13:45:10.250 -03:00"));
+        assert_eq!(row10[11].as_deref(), Some("ab   "));
+
+        // Every column written back with its own displayed text.
+        let changes = before
+            .rows
+            .iter()
+            .map(|row| RowChange::Update {
+                key: vec![row[0].clone()],
+                values: (1..row.len()).map(|i| cv(i, row[i].as_deref())).collect(),
+            })
+            .collect();
+        let res = apply(&s, &t, changes).await.unwrap();
+        assert_eq!(res.updated, 3);
+        assert!(!res.in_transaction);
+        let after = run(&s, sql).await;
+        assert_eq!(after.rows, before.rows);
+
+        // New values in the display format.
+        let res = apply(
+            &s,
+            &t,
+            vec![RowChange::Update {
+                key: vec![Some("10".into())],
+                values: vec![
+                    cv(1, Some("-0.00001")),
+                    cv(4, Some("Inf")),
+                    cv(5, Some("-1.25")),
+                    cv(6, Some("2023-01-02 03:04:05")),
+                    cv(7, Some("2023-01-02 03:04:05.000001")),
+                    cv(9, Some("2023-01-02 03:04:05.5 +05:30")),
+                    cv(10, Some("x'y\"z")),
+                    cv(12, None),
+                    cv(14, Some("0a0b")),
+                ],
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.updated, 1);
+        let row = run(&s, "select * from lq_edit_types where id = 10")
+            .await
+            .rows
+            .remove(0);
+        assert_eq!(row[1].as_deref(), Some("-0.00001"));
+        assert_eq!(row[4].as_deref(), Some("Inf"));
+        assert_eq!(row[5].as_deref(), Some("-1.25"));
+        assert_eq!(row[6].as_deref(), Some("2023-01-02 03:04:05"));
+        assert_eq!(row[7].as_deref(), Some("2023-01-02 03:04:05.000001"));
+        assert_eq!(row[9].as_deref(), Some("2023-01-02 03:04:05.500 +05:30"));
+        assert_eq!(row[10].as_deref(), Some("x'y\"z"));
+        assert_eq!(row[12], None);
+        assert_eq!(row[14].as_deref(), Some("0A0B"));
+
+        // Insert a copy of a row under a new key, then delete it.
+        let source = &after.rows[1];
+        let mut values: Vec<CellValue> = (1..source.len())
+            .map(|i| cv(i, source[i].as_deref()))
+            .collect();
+        values.push(cv(0, Some("30")));
+        let res = apply(&s, &t, vec![RowChange::Insert { values }])
+            .await
+            .unwrap();
+        assert_eq!(res.inserted, 1);
+        let copy = run(&s, "select * from lq_edit_types where id = 30")
+            .await
+            .rows
+            .remove(0);
+        assert_eq!(copy[1..], source[1..]);
+        let res = apply(
+            &s,
+            &t,
+            vec![RowChange::Delete {
+                key: vec![Some("30".into())],
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.deleted, 1);
+        assert!(run(&s, "select * from lq_edit_types where id = 30")
+            .await
+            .rows
+            .is_empty());
+
+        run(&s, "drop table lq_edit_types purge").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn oracle_edit_date_keys_and_booleans() {
+        let Some(s) = open().await else { return };
+        try_run(&s, "drop table lq_edit_dk purge").await;
+        run(&s, "create table lq_edit_dk (d date, ts timestamp(6), v varchar2(10), primary key (d, ts))").await;
+        run(&s, "insert into lq_edit_dk values (timestamp '2024-01-02 03:04:05', timestamp '2024-01-02 03:04:05.000007', 'a')").await;
+        let r = run(&s, "select v, d, ts from lq_edit_dk").await;
+        let t = target_of(&r);
+        assert_eq!(t.key, [1, 2]);
+        let row = &r.rows[0];
+        let res = apply(
+            &s,
+            &t,
+            vec![RowChange::Update {
+                key: vec![row[1].clone(), row[2].clone()],
+                values: vec![cv(0, Some("b"))],
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.updated, 1);
+        run(&s, "drop table lq_edit_dk purge").await;
+
+        // BOOLEAN columns exist from 23ai on.
+        try_run(&s, "drop table lq_edit_bool purge").await;
+        if try_run(
+            &s,
+            "create table lq_edit_bool (id number primary key, b boolean)",
+        )
+        .await
+        {
+            run(&s, "insert into lq_edit_bool values (1, true)").await;
+            let r = run(&s, "select * from lq_edit_bool").await;
+            let t = target_of(&r);
+            assert_eq!(r.rows[0][1].as_deref(), Some("TRUE"));
+            apply(
+                &s,
+                &t,
+                vec![RowChange::Update {
+                    key: vec![Some("1".into())],
+                    values: vec![cv(1, Some("FALSE"))],
+                }],
+            )
+            .await
+            .unwrap();
+            let r = run(&s, "select b from lq_edit_bool").await;
+            assert_eq!(r.rows[0][0].as_deref(), Some("FALSE"));
+            run(&s, "drop table lq_edit_bool purge").await;
+        }
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn oracle_edit_transactions() {
+        let Some(s) = open().await else { return };
+        let other = open().await.unwrap();
+        try_run(&s, "drop table lq_edit_tx purge").await;
+        run(
+            &s,
+            "create table lq_edit_tx (id number primary key, v varchar2(10))",
+        )
+        .await;
+        run(&s, "insert into lq_edit_tx values (1, 'a')").await;
+        run(&s, "insert into lq_edit_tx values (2, 'b')").await;
+        let t = target_of(&run(&s, "select id, v from lq_edit_tx").await);
+        let set = |id: &str, v: &str| RowChange::Update {
+            key: vec![Some(id.into())],
+            values: vec![cv(1, Some(v))],
+        };
+        let values = |rows: Vec<Vec<Option<String>>>| -> Vec<String> {
+            rows.into_iter()
+                .map(|r| r[0].clone().unwrap_or_default())
+                .collect()
+        };
+        let sql = "select v from lq_edit_tx order by id";
+
+        // A key that matches nothing undoes the whole batch.
+        let err = apply(&s, &t, vec![set("1", "x"), set("99", "y")])
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Database);
+        assert!(
+            err.message.starts_with("Row 2 was not saved: 0 rows"),
+            "{err}"
+        );
+        assert_eq!(values(run(&s, sql).await.rows), ["a", "b"]);
+        assert!(!s.tx_state().in_transaction);
+
+        // Autocommit: other sessions see the change at once.
+        let res = apply(&s, &t, vec![set("1", "x")]).await.unwrap();
+        assert!(!res.in_transaction);
+        assert_eq!(values(run(&other, sql).await.rows), ["x", "b"]);
+
+        // Manual mode: the change joins the open transaction.
+        s.set_autocommit(false).await.unwrap();
+        let res = apply(&s, &t, vec![set("2", "z")]).await.unwrap();
+        assert!(res.in_transaction);
+        assert!(s.tx_state().in_transaction);
+        assert_eq!(values(run(&s, sql).await.rows), ["x", "z"]);
+        assert_eq!(values(run(&other, sql).await.rows), ["x", "b"]);
+        s.end_transaction(false).await.unwrap();
+        assert_eq!(values(run(&s, sql).await.rows), ["x", "b"]);
+
+        // A failure in manual mode keeps the earlier work of the transaction.
+        run(&s, "update lq_edit_tx set v = 'm' where id = 1").await;
+        let err = apply(
+            &s,
+            &t,
+            vec![
+                set("2", "q"),
+                RowChange::Delete {
+                    key: vec![Some("99".into())],
+                },
+            ],
+        )
+        .await
+        .unwrap_err();
+        assert!(err.message.starts_with("Row 2"), "{err}");
+        assert!(s.tx_state().in_transaction);
+        assert_eq!(values(run(&s, sql).await.rows), ["m", "b"]);
+        s.end_transaction(false).await.unwrap();
+        s.set_autocommit(true).await.unwrap();
+
+        // Bad input is refused before anything runs.
+        let err = apply(
+            &s,
+            &t,
+            vec![RowChange::Delete {
+                key: vec![Some("abc".into())],
+            }],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.kind, ErrorKind::Invalid);
+        assert_eq!(values(run(&s, sql).await.rows), ["x", "b"]);
+
+        run(&s, "drop table lq_edit_tx purge").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn oracle_edit_quoted_names() {
+        let Some(s) = open().await else { return };
+        try_run(&s, r#"drop table "lq_edit Mixed" purge"#).await;
+        run(&s, r#"create table "lq_edit Mixed" ("Id Key" number primary key, "Some Value" varchar2(20), "lower" date)"#).await;
+        run(
+            &s,
+            r#"insert into "lq_edit Mixed" values (1, 'one', date '2024-01-01')"#,
+        )
+        .await;
+
+        let r = run(
+            &s,
+            r#"select m."Some Value" sv, m."Id Key", "lower" from "lq_edit Mixed" m"#,
+        )
+        .await;
+        let t = target_of(&r);
+        assert_eq!(t.table, "lq_edit Mixed");
+        assert_eq!(t.key, [1]);
+        assert_eq!(t.columns[0].as_ref().unwrap().name, "Some Value");
+
+        let res = apply(
+            &s,
+            &t,
+            vec![
+                RowChange::Update {
+                    key: vec![Some("1".into())],
+                    values: vec![cv(0, Some("uno")), cv(2, Some("2024-12-31 23:59:59"))],
+                },
+                RowChange::Insert {
+                    values: vec![cv(1, Some("2")), cv(0, Some("two"))],
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!((res.updated, res.inserted), (1, 1));
+        let r = run(
+            &s,
+            r#"select "Id Key", "Some Value", "lower" from "lq_edit Mixed" order by 1"#,
+        )
+        .await;
+        assert_eq!(r.rows[0][1].as_deref(), Some("uno"));
+        assert_eq!(r.rows[0][2].as_deref(), Some("2024-12-31 23:59:59"));
+        assert_eq!(r.rows[1][1].as_deref(), Some("two"));
+        let t2 = target_of(&r);
+        let res = apply(
+            &s,
+            &t2,
+            vec![RowChange::Delete {
+                key: vec![Some("2".into())],
+            }],
+        )
+        .await
+        .unwrap();
+        assert_eq!(res.deleted, 1);
+
+        run(&s, r#"drop table "lq_edit Mixed" purge"#).await;
     }
 }

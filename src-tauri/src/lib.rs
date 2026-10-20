@@ -238,6 +238,16 @@ async fn oracle_tns_folder(path: String) -> AppResult<drivers::tns::TnsSource> {
         .map_err(|e| AppError::internal(e.to_string()))?
 }
 
+/// Applies the grid's pending changes on the tab's session.
+#[tauri::command]
+async fn apply_changes(
+    state: State<'_, AppState>,
+    session_id: String,
+    request: model::ApplyRequest,
+) -> AppResult<model::ApplyResult> {
+    state.session(&session_id)?.apply_changes(&request).await
+}
+
 /// Writes a file the user picked in the "Save as" dialog.
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> AppResult<()> {
@@ -280,6 +290,7 @@ pub fn run() {
             open_session,
             close_session,
             execute,
+            apply_changes,
             cancel_query,
             set_autocommit,
             commit,

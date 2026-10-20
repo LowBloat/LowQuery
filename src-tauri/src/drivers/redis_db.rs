@@ -400,6 +400,7 @@ impl RedisSession {
             elapsed_ms,
             notices: grid.notices,
             in_transaction: self.tx_state().in_transaction,
+            ..Default::default()
         })
     }
 

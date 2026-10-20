@@ -3,7 +3,7 @@
  * Loaded only by `vite dev` when the page is not running inside the app.
  */
 import { mockIPC } from "@tauri-apps/api/mocks";
-import type { ConnectionProfile, DbColumn, ExecResult } from "./api";
+import type { ApplyResult, ConnectionProfile, DbColumn, EditTarget, ExecResult, RowChange } from "./api";
 import { emptyProfile } from "./api";
 import { workspace } from "./state/workspace.svelte";
 import { explorer } from "./state/explorer.svelte";
@@ -136,7 +136,15 @@ const TABLE_COLUMNS: Record<string, DbColumn[]> = {
 
 function execute(sql: string, maxRows: number): ExecResult {
 	const s = sql.trim().toLowerCase();
-	const base = { truncated: false, rowsAffected: null, notices: [], inTransaction: false, elapsedMs: 12 };
+	const base = {
+		truncated: false,
+		rowsAffected: null,
+		notices: [],
+		inTransaction: false,
+		elapsedMs: 12,
+		editable: null,
+		readOnlyReason: null,
+	};
 	if (s.includes("error")) {
 		throw { kind: "database", code: "42P01", message: 'relation "error" does not exist', position: s.indexOf("error") };
 	}
@@ -145,9 +153,12 @@ function execute(sql: string, maxRows: number): ExecResult {
 		if (/\bwhere\s+active\b/.test(s)) rows = rows.filter((r) => r[6] === "true");
 		if (/\border\s+by\s+balance\s+desc\b/.test(s)) rows = [...rows].sort((a, b) => Number(b[4]) - Number(a[4]));
 		const total = rows.length;
+		const joined = /\bjoin\b|,\s*orders\b/.test(s);
 		return {
 			...base,
 			elapsedMs: 38,
+			editable: joined ? null : CUSTOMER_TARGET,
+			readOnlyReason: joined ? "Read-only: the result combines columns from several tables." : null,
 			truncated: maxRows > 0 && total > maxRows,
 			columns: [
 				{ name: "id", typeName: "int8", kind: "number" },
@@ -165,6 +176,46 @@ function execute(sql: string, maxRows: number): ExecResult {
 		return { ...base, columns: null, rows: [], rowsAffected: 3, notices: ["NOTICE: 3 rows changed"] };
 	}
 	return { ...base, columns: null, rows: [] };
+}
+
+const CUSTOMER_TARGET = {
+	schema: "public",
+	table: "customers",
+	columns: CUSTOMER_COLUMNS.map((c) => ({ name: c.name, typeName: c.typeName })),
+	key: [0],
+};
+
+// Applies grid edits to the in-memory customers, all or nothing.
+function applyChanges(req: { target: EditTarget; changes: RowChange[] }): ApplyResult {
+	const next = CUSTOMERS.map((r) => [...r]);
+	const out = { updated: 0, deleted: 0, inserted: 0, elapsedMs: 9, inTransaction: false };
+	for (const [i, change] of req.changes.entries()) {
+		if (change.op === "insert") {
+			const row: (string | null)[] = [String(Math.max(...next.map((r) => Number(r[0]))) + 1), "", null, null, "0.00", new Date().toISOString().slice(0, 19).replace("T", " ") + "+00", "true"];
+			for (const v of change.values) row[v.column] = v.value;
+			next.push(row);
+			out.inserted++;
+			continue;
+		}
+		const at = next.findIndex((r) => r[0] === change.key[0]);
+		if (at < 0) {
+			throw { kind: "database", message: `Row ${i + 1} was not saved: 0 rows matched its key (changed or removed by someone else).` };
+		}
+		if (change.op === "delete") {
+			next.splice(at, 1);
+			out.deleted++;
+		} else {
+			for (const v of change.values) {
+				if (v.column === 4 && v.value !== null && Number.isNaN(Number(v.value))) {
+					throw { kind: "database", code: "22P02", message: `invalid input syntax for type numeric: "${v.value}"` };
+				}
+				next[at][v.column] = v.value;
+			}
+			out.updated++;
+		}
+	}
+	CUSTOMERS.splice(0, CUSTOMERS.length, ...next);
+	return out;
 }
 
 export function installDevMock() {
@@ -205,6 +256,8 @@ export function installDevMock() {
 			}
 			case "execute":
 				return execute(args.request.sql, args.request.maxRows);
+			case "apply_changes":
+				return applyChanges(args.request);
 			case "list_schemas":
 				return ["public", "sales", "audit", "information_schema", "pg_catalog"];
 			case "list_objects":

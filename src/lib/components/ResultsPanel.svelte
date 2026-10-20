@@ -1,10 +1,25 @@
 <script lang="ts">
 	import { Tabs, TabsList, TabsTrigger, TabsContent, Button, Chip, Tooltip, EmptyState, Spinner, toast } from "@codeatlasdev/ui";
-	import { Copy, FileDown, FileJson, MessageSquareText, TableProperties, CircleAlert, CircleCheck, Info, TriangleAlert } from "@lucide/svelte";
+	import {
+		Copy,
+		FileDown,
+		FileJson,
+		MessageSquareText,
+		TableProperties,
+		CircleAlert,
+		CircleCheck,
+		Info,
+		TriangleAlert,
+		Lock,
+		Plus,
+		Save,
+		Undo2,
+	} from "@lucide/svelte";
 	import { invoke } from "@tauri-apps/api/core";
 	import { save } from "@tauri-apps/plugin-dialog";
 	import ResultGrid from "./ResultGrid.svelte";
-	import type { QueryTab, ResultSet } from "../state/workspace.svelte";
+	import { workspace, type QueryTab, type ResultSet } from "../state/workspace.svelte";
+	import { pendingCount } from "../state/edits";
 	import { cellsToTsv, toCsv, toJson } from "../export";
 
 	interface Props {
@@ -15,6 +30,9 @@
 
 	const current = $derived(tab.results.find((r) => r.id === tab.activeResult) ?? null);
 	const errors = $derived(tab.log.filter((l) => l.level === "error").length);
+	const pending = $derived(current ? pendingCount(current.edits) : 0);
+
+	let grids = $state<Record<string, ResultGrid | undefined>>({});
 
 	let logEl = $state<HTMLOListElement | null>(null);
 	$effect(() => {
@@ -70,6 +88,44 @@
 			</TabsList>
 			{#if current}
 				<div class="lq-results__meta">
+					{#if current.result.editable}
+						{#if pending > 0}
+							<span class="lq-results__pending" aria-live="polite">
+								{pending} {pending === 1 ? "change" : "changes"}
+							</span>
+							<Button size="sm" variant="ghost" disabled={tab.saving} onclick={() => workspace.discardEdits(current)}>
+								{#snippet leading()}<Undo2 size={14} />{/snippet}
+								Discard
+							</Button>
+							<Tooltip content="Write the changes to {current.result.editable.table} (Ctrl+S)">
+								{#snippet triggerChild(props)}
+									<Button
+										{...props}
+										size="sm"
+										variant="filled"
+										loading={tab.saving}
+										disabled={tab.running}
+										onclick={() => workspace.saveEdits(tab, current)}
+									>
+										{#snippet leading()}<Save size={14} />{/snippet}
+										Save
+									</Button>
+								{/snippet}
+							</Tooltip>
+						{/if}
+						<Tooltip content="Add a row to {current.result.editable.table} (Insert)">
+							{#snippet triggerChild(props)}
+								<Button {...props} size="sm" variant="ghost" onclick={() => grids[current.id]?.addRow()}>
+									{#snippet leading()}<Plus size={14} />{/snippet}
+									Row
+								</Button>
+							{/snippet}
+						</Tooltip>
+					{:else if current.result.readOnlyReason}
+						<Tooltip content={current.result.readOnlyReason}>
+							<Chip label="Read-only" size="sm" icon={Lock} />
+						</Tooltip>
+					{/if}
 					<span class="lq-results__count">
 						{current.result.rows.length.toLocaleString()}
 						{current.result.rows.length === 1 ? "row" : "rows"} · {current.result.elapsedMs} ms
@@ -98,7 +154,15 @@
 		{#each tab.results as r (r.id)}
 			<TabsContent value={r.id} class="lq-results__panel">
 				{#if (r.result.columns ?? []).length > 0}
-					<ResultGrid columns={r.result.columns ?? []} rows={r.result.rows} label={r.title} />
+					<ResultGrid
+						bind:this={grids[r.id]}
+						columns={r.result.columns ?? []}
+						rows={r.result.rows}
+						label={r.title}
+						editable={r.result.editable}
+						edits={r.edits}
+						onsave={() => workspace.saveEdits(tab, r)}
+					/>
 				{/if}
 			</TabsContent>
 		{/each}
@@ -176,6 +240,13 @@
 		align-items: center;
 		gap: var(--ca-space-1);
 		flex-shrink: 0;
+	}
+	.lq-results__pending {
+		padding: 0 var(--ca-space-1);
+		color: var(--ca-text-primary);
+		font-size: 12px;
+		font-weight: 600;
+		white-space: nowrap;
 	}
 	.lq-results__count {
 		padding-right: var(--ca-space-2);

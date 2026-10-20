@@ -58,6 +58,34 @@ export interface ColumnInfo {
 	kind: ValueKind;
 }
 
+/** The table behind an editable result (see src-tauri/src/model.rs). */
+export interface EditTarget {
+	schema: string | null;
+	table: string;
+	/** Per result column: the table column it shows, or null for expressions. */
+	columns: ({ name: string; typeName: string } | null)[];
+	/** Result column indexes forming the key. */
+	key: number[];
+}
+
+export interface CellValue {
+	column: number;
+	value: string | null;
+}
+
+export type RowChange =
+	| { op: "update"; key: (string | null)[]; values: CellValue[] }
+	| { op: "delete"; key: (string | null)[] }
+	| { op: "insert"; values: CellValue[] };
+
+export interface ApplyResult {
+	updated: number;
+	deleted: number;
+	inserted: number;
+	elapsedMs: number;
+	inTransaction: boolean;
+}
+
 export interface ExecResult {
 	columns: ColumnInfo[] | null;
 	rows: (string | null)[][];
@@ -66,6 +94,8 @@ export interface ExecResult {
 	elapsedMs: number;
 	notices: string[];
 	inTransaction: boolean;
+	editable: EditTarget | null;
+	readOnlyReason: string | null;
 }
 
 export interface TxState {
@@ -181,6 +211,8 @@ export const api = {
 	closeSession: (sessionId: string) => invoke<void>("close_session", { sessionId }),
 	execute: (sessionId: string, sql: string, maxRows: number) =>
 		invoke<ExecResult>("execute", { sessionId, request: { sql, maxRows } }),
+	applyChanges: (sessionId: string, target: EditTarget, changes: RowChange[]) =>
+		invoke<ApplyResult>("apply_changes", { sessionId, request: { target, changes } }),
 	cancel: (sessionId: string) => invoke<void>("cancel_query", { sessionId }),
 	setAutocommit: (sessionId: string, on: boolean) =>
 		invoke<TxState>("set_autocommit", { sessionId, on }),

@@ -91,7 +91,8 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/api.ts` | Types and `invoke` wrappers for every command |
 | `lib/sql/split.ts` | Script splitting per dialect: strings, quoted identifiers, nested comments, dollar quotes, `q'[...]'`, PL/SQL blocks |
 | `lib/sql/ident.ts` | Identifier quoting and preview queries per engine |
-| `lib/state/workspace.svelte.ts` | Tabs, sessions, execution, transactions, drafts |
+| `lib/state/workspace.svelte.ts` | Tabs, sessions, execution, transactions, drafts, saving grid edits |
+| `lib/state/edits.ts` | Pending grid edits per result and the changes sent to `apply_changes` |
 | `lib/state/explorer.svelte.ts` | Schema browser and autocompletion namespace |
 | `lib/state/tns.svelte.ts` | Detected `tnsnames.ora` sources and aliases for the connection and import dialogs |
 | `lib/components/` | Editor, grid, results, sidebar, dialogs |
@@ -99,9 +100,23 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 
 Scripts are split in the interface so the editor knows where each statement starts. Each statement is a separate command call: results appear as they finish, and an error position maps back to the document.
 
+## Editing results
+
+A result is editable only when the driver can prove which table row each grid row is. Every driver answers that in `execute` by setting `ExecResult.editable` (table, the table column behind each result column or `null` for expressions, and the result columns that hold the key) or `readOnlyReason`. The key is the primary key, otherwise a unique key whose columns are all NOT NULL. Detection never fails a query and costs at most one extra round trip, usually cached per table on the session.
+
+| Database | Where the source table comes from | Why a result is read-only |
+| --- | --- | --- |
+| PostgreSQL | `table_oid`/`column_id` of the prepared statement; key and types from `pg_index`/`format_type` | Several tables, any join (a self-join reports one OID), UNION, views |
+| Oracle | The SQL is read by a small parser that accepts `SELECT columns FROM table [alias] [WHERE/ORDER BY/FETCH]` only; the names are checked against the result metadata and resolved in the dictionary like Oracle does (schema, then public synonym) | Joins, subqueries, WITH, GROUP BY, set operators, views, database links |
+| MySQL, MariaDB | `org_table`/`org_name`/`schema` of each column plus the alias; key from `information_schema` | Several tables or aliases, set operators, views, temporary tables |
+| SQL Server | `sys.dm_exec_describe_first_result_set` in browse mode, with the keys from `sys.indexes` in the same batch | Several tables or the same table twice, computed and rowversion columns, temp tables |
+| SQLite | Column metadata (`sqlite3_column_table_name`) checked against `EXPLAIN QUERY PLAN`; `rowid` works as the key of a table without one | Compound selects, more than one table scan, results without the key |
+
+`apply_changes` receives the target and a list of updates (old key plus new values), deletes and inserts. Each driver builds one statement per change with quoted, schema-qualified names and binds every value, converting the text the grid shows back into the column type the engine's own way (typed binds or explicit conversions that do not depend on session date or number formats). Every UPDATE and DELETE must touch exactly one row. With autocommit on the whole save is one transaction; inside an open transaction it runs behind a savepoint, so a failed save is undone without losing earlier work. After saving, the interface runs the query again to show what the database now holds.
+
 ## Adding a database engine
 
 1. Open a [database support issue](https://github.com/LowBloat/LowQuery/issues/new?template=database_support.yml) describing the driver and the engine conventions to follow.
-2. Add a module in `src-tauri/src/drivers/` that implements connect, execute (with a server-side row limit), transactions, cancel when the protocol allows it, and the metadata queries; add a variant to `Session`.
+2. Add a module in `src-tauri/src/drivers/` that implements connect, execute (with a server-side row limit), transactions, cancel when the protocol allows it, the metadata queries, and result editing (or a read-only reason for every result); add a variant to `Session`.
 3. Add the engine to `Engine` in `model.rs` and `api.ts`, its connection fields to the dialog, its dialect to `split.ts` and the editor, and its quoting rules to `ident.ts`.
 4. Add integration tests and a CI job with the engine in a container.

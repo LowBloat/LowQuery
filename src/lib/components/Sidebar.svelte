@@ -197,7 +197,7 @@
 				<EmptyState
 					icon={Database}
 					title="No connections"
-					description="Add a PostgreSQL or Oracle connection to get started."
+					description="Add a connection to get started."
 				>
 					{#snippet actions()}
 						<Button size="sm" variant="filled" onclick={() => (workspace.editing = emptyProfile())}>

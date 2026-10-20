@@ -185,6 +185,74 @@ pub struct ExecResult {
     pub elapsed_ms: u64,
     pub notices: Vec<String>,
     pub in_transaction: bool,
+    /// Set when the rows come from one table with its key in the result, so
+    /// the grid can edit them.
+    pub editable: Option<EditTarget>,
+    /// Why a row-returning result cannot be edited (shown in the grid).
+    pub read_only_reason: Option<String>,
+}
+
+/// The table behind an editable result.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditTarget {
+    pub schema: Option<String>,
+    pub table: String,
+    /// One entry per result column: the table column it shows, or `None` for
+    /// expressions, which stay read-only.
+    pub columns: Vec<Option<EditColumn>>,
+    /// Result column indexes that form the table's primary (or unique) key.
+    pub key: Vec<usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditColumn {
+    pub name: String,
+    /// Type as the engine names it in DDL, used to convert the text value.
+    pub type_name: String,
+}
+
+/// A value for one result column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellValue {
+    pub column: usize,
+    pub value: Option<String>,
+}
+
+/// One pending change from the grid. `key` holds the original values of the
+/// key columns, in the order of `EditTarget::key`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum RowChange {
+    Update {
+        key: Vec<Option<String>>,
+        values: Vec<CellValue>,
+    },
+    Delete {
+        key: Vec<Option<String>>,
+    },
+    Insert {
+        values: Vec<CellValue>,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyRequest {
+    pub target: EditTarget,
+    pub changes: Vec<RowChange>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplyResult {
+    pub updated: u64,
+    pub deleted: u64,
+    pub inserted: u64,
+    pub elapsed_ms: u64,
+    pub in_transaction: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -10,7 +10,10 @@ pub mod sqlserver;
 pub mod tns;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{ConnectionProfile, DbColumn, DbObject, Engine, ExecRequest, ExecResult};
+use crate::model::{
+    ApplyRequest, ApplyResult, ConnectionProfile, DbColumn, DbObject, Engine, ExecRequest,
+    ExecResult,
+};
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -117,6 +120,33 @@ impl Session {
 
     pub async fn list_schemas(&self) -> AppResult<Vec<String>> {
         dispatch!(self, s => s.list_schemas().await)
+    }
+
+    /// Applies grid edits as one unit: with autocommit on they commit
+    /// together or not at all; with autocommit off they join the open
+    /// transaction.
+    pub async fn apply_changes(&self, req: &ApplyRequest) -> AppResult<ApplyResult> {
+        if req.changes.is_empty() {
+            return Ok(ApplyResult {
+                in_transaction: self.tx_state().in_transaction,
+                ..Default::default()
+            });
+        }
+        if req.target.key.is_empty() {
+            return Err(AppError::invalid(
+                "This result has no key to identify its rows.",
+            ));
+        }
+        match self {
+            Session::Postgres(s) => s.apply_changes(req).await,
+            Session::Oracle(s) => s.apply_changes(req).await,
+            Session::Mysql(s) => s.apply_changes(req).await,
+            Session::SqlServer(s) => s.apply_changes(req).await,
+            Session::Sqlite(s) => s.apply_changes(req).await,
+            Session::Redis(_) => Err(AppError::invalid(
+                "Redis replies cannot be edited in the grid.",
+            )),
+        }
     }
 
     pub async fn list_objects(&self, schema: &str) -> AppResult<Vec<DbObject>> {

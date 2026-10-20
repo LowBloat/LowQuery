@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { onMount } from "svelte";
+	import { onMount, untrack } from "svelte";
 	import {
 		Dialog,
 		Button,
@@ -7,23 +7,72 @@
 		DropdownMenu,
 		DropdownMenuItem,
 		DropdownMenuSeparator,
+		TextArea,
 		toast,
 	} from "@codeatlasdev/ui";
-	import { ArrowDown, ArrowUp, Copy, Rows3, Table2, Eye } from "@lucide/svelte";
-	import type { ColumnInfo } from "../api";
+	import {
+		ArrowDown,
+		ArrowUp,
+		CircleSlash,
+		Copy,
+		CopyPlus,
+		Eye,
+		Pencil,
+		Plus,
+		RotateCcw,
+		Rows3,
+		Table2,
+		Trash2,
+		Undo2,
+	} from "@lucide/svelte";
+	import type { ColumnInfo, EditTarget } from "../api";
 	import { cellsToTsv, formatValue } from "../export";
+	import {
+		addRow as addPendingRow,
+		baseId,
+		cellValue,
+		insertedIds,
+		isCellEdited,
+		revertCell,
+		setCell,
+		toggleDelete,
+		type EditMap,
+	} from "../state/edits";
 
 	interface Props {
 		columns: ColumnInfo[];
 		rows: (string | null)[][];
 		label?: string;
+		/** Set when the rows can be edited; `edits` then holds the pending changes. */
+		editable?: EditTarget | null;
+		edits?: EditMap;
+		onsave?: () => void;
 	}
 
-	let { columns, rows, label = "Result" }: Props = $props();
+	let { columns, rows, label = "Result", editable = null, edits, onsave }: Props = $props();
 
 	const ROW_H = 26;
 	const HEAD_H = 32;
 	const OVERSCAN = 8;
+	/** Longer or multi-line values are edited in the value dialog. */
+	const INLINE_MAX = 500;
+
+	interface DisplayRow {
+		id: string;
+		/** Index into `rows`; null for a new row. */
+		base: number | null;
+	}
+
+	interface CellEdit {
+		id: string;
+		base: number | null;
+		col: number;
+		value: string;
+		/** Started from NULL: leaving it empty keeps NULL. */
+		wasNull: boolean;
+		/** Started by typing: keep the caret after the typed text. */
+		typed: boolean;
+	}
 
 	let viewport: HTMLDivElement;
 	let scrollTop = $state(0);
@@ -31,10 +80,17 @@
 	let widths = $state<number[]>([]);
 	let sort = $state<{ col: number; dir: 1 | -1 } | null>(null);
 	let active = $state<{ row: number; col: number } | null>(null);
-	let viewer = $state<{ title: string; value: string; type: string } | null>(null);
+	let editing = $state<CellEdit | null>(null);
+	let viewer = $state<{
+		title: string;
+		value: string;
+		type: string;
+		edit: Omit<CellEdit, "value" | "typed"> | null;
+	} | null>(null);
+	let viewerText = $state("");
 	let menu = $state<{ x: number; y: number; row: number; col: number } | null>(null);
 
-	// Display indexes (local sort, no new query).
+	// Indexes of the result rows in display order (local sort, no new query).
 	const order = $derived.by(() => {
 		const idx = rows.map((_, i) => i);
 		if (!sort) return idx;
@@ -56,12 +112,25 @@
 		return idx;
 	});
 
-	const rowNumWidth = $derived(Math.max(44, String(rows.length).length * 9 + 22));
+	// Result rows, then new rows at the end.
+	const display = $derived.by((): DisplayRow[] => {
+		const list: DisplayRow[] = order.map((i) => ({ id: baseId(i), base: i }));
+		if (edits) for (const id of insertedIds(edits)) list.push({ id, base: null });
+		return list;
+	});
+
+	const rowNumWidth = $derived(Math.max(44, String(display.length).length * 9 + 22));
 	const template = $derived(`${rowNumWidth}px ${widths.map((w) => `${w}px`).join(" ")}`);
 	const totalWidth = $derived(rowNumWidth + widths.reduce((a, b) => a + b, 0));
 	const first = $derived(Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN));
-	const last = $derived(Math.min(order.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN));
-	const visible = $derived(order.slice(first, last).map((r, i) => ({ display: first + i, row: r })));
+	const last = $derived(Math.min(display.length, Math.ceil((scrollTop + height) / ROW_H) + OVERSCAN));
+	const visible = $derived(display.slice(first, last).map((d, i) => ({ ...d, display: first + i })));
+	// Where a new row starts editing: key columns are often identities, so skip them.
+	const firstEditable = $derived.by(() => {
+		if (!editable) return 0;
+		const cols = editable.columns.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
+		return cols.find((i) => !editable.key.includes(i)) ?? cols[0] ?? 0;
+	});
 
 	function measureWidths() {
 		const canvas = document.createElement("canvas");
@@ -85,15 +154,25 @@
 		});
 	}
 
-	// New result: recompute widths, clear sort and selection.
+	// New columns: recompute widths, clear sort and selection. The same
+	// columns again (the result refreshed after saving) keep the layout.
+	let signature = "";
 	$effect(() => {
-		void columns;
+		const sig = columns.map((c) => `${c.name}\u0000${c.typeName}`).join("\u0001");
 		void rows;
-		measureWidths();
-		sort = null;
-		active = null;
-		if (viewport) viewport.scrollTop = 0;
-		scrollTop = 0;
+		untrack(() => {
+			editing = null;
+			if (sig === signature) {
+				if (active && active.row >= display.length) active = null;
+				return;
+			}
+			signature = sig;
+			measureWidths();
+			sort = null;
+			active = null;
+			if (viewport) viewport.scrollTop = 0;
+			scrollTop = 0;
+		});
 	});
 
 	onMount(() => {
@@ -140,12 +219,19 @@
 		widths[col] = Math.round(Math.min(w, 900));
 	}
 
-	function select(display: number, col: number) {
-		active = { row: display, col };
+	function select(row: number, col: number) {
+		active = { row, col };
 	}
 
-	function ensureVisible(display: number, col: number) {
-		const top = display * ROW_H;
+	function moveTo(row: number, col: number) {
+		row = Math.min(Math.max(row, 0), display.length - 1);
+		col = Math.min(Math.max(col, 0), columns.length - 1);
+		active = { row, col };
+		ensureVisible(row, col);
+	}
+
+	function ensureVisible(row: number, col: number) {
+		const top = row * ROW_H;
 		const bodyH = viewport.clientHeight - HEAD_H;
 		if (top < viewport.scrollTop) viewport.scrollTop = top;
 		else if (top + ROW_H > viewport.scrollTop + bodyH) viewport.scrollTop = top + ROW_H - bodyH;
@@ -153,6 +239,7 @@
 		const right = left + (widths[col] ?? 0);
 		if (left - rowNumWidth < viewport.scrollLeft) viewport.scrollLeft = left - rowNumWidth;
 		else if (right > viewport.scrollLeft + viewport.clientWidth) viewport.scrollLeft = right - viewport.clientWidth;
+		scrollTop = viewport.scrollTop;
 	}
 
 	async function copy(text: string, what: string) {
@@ -164,26 +251,160 @@
 		}
 	}
 
-	function valueAt(display: number, col: number): string | null {
-		return rows[order[display]]?.[col] ?? null;
+	const original = (d: DisplayRow) => (d.base === null ? null : rows[d.base]);
+
+	function valueAt(row: number, col: number): string | null {
+		const d = display[row];
+		if (!d) return null;
+		return edits ? cellValue(edits, d.id, original(d), col) : (original(d)?.[col] ?? null);
 	}
 
-	function rowTsv(display: number): string {
-		return cellsToTsv([rows[order[display]]]);
+	function rowValues(row: number): (string | null)[] {
+		return columns.map((_, ci) => valueAt(row, ci));
+	}
+
+	function rowTsv(row: number): string {
+		return cellsToTsv([rowValues(row)]);
 	}
 
 	function allTsv(): string {
 		return cellsToTsv([columns.map((c) => c.name), ...order.map((i) => rows[i])]);
 	}
 
-	function openViewer(display: number, col: number) {
-		const v = valueAt(display, col);
+	// ---- editing -------------------------------------------------------------
+
+	function canEdit(row: number, col: number): boolean {
+		const d = display[row];
+		return !!editable && !!edits && !!d && editable.columns[col] != null && edits[d.id]?.op !== "delete";
+	}
+
+	function startEdit(row: number, col: number, typed?: string) {
+		if (!canEdit(row, col)) return;
+		const d = display[row];
+		const v = valueAt(row, col);
+		if (typed === undefined && v !== null && (v.includes("\n") || v.length > INLINE_MAX)) {
+			openViewer(row, col);
+			return;
+		}
+		active = { row, col };
+		ensureVisible(row, col);
+		editing = { id: d.id, base: d.base, col, value: typed ?? v ?? "", wasNull: typed === undefined && v === null, typed: typed !== undefined };
+	}
+
+	function writeCell(id: string, base: number | null, col: number, value: string | null) {
+		if (!edits) return;
+		const d = { id, base };
+		const current = cellValue(edits, id, original(d), col);
+		if (current === value && !isCellEdited(edits, id, col)) return;
+		setCell(edits, id, base, original(d), col, value);
+	}
+
+	function commitEdit() {
+		const e = editing;
+		if (!e) return;
+		editing = null;
+		writeCell(e.id, e.base, e.col, e.wasNull && e.value === "" ? null : e.value);
+	}
+
+	function focusInput(node: HTMLInputElement, typed: boolean) {
+		node.focus();
+		if (typed) node.setSelectionRange(node.value.length, node.value.length);
+		else node.select();
+	}
+
+	function inputKey(e: KeyboardEvent) {
+		e.stopPropagation();
+		const mod = e.ctrlKey || e.metaKey;
+		if (e.key === "Enter" || e.key === "Tab") {
+			e.preventDefault();
+			const cur = active;
+			commitEdit();
+			viewport.focus();
+			if (cur) {
+				if (e.key === "Enter") moveTo(cur.row + (e.shiftKey ? -1 : 1), cur.col);
+				else moveTo(cur.row, cur.col + (e.shiftKey ? -1 : 1));
+			}
+		} else if (e.key === "Escape") {
+			e.preventDefault();
+			editing = null;
+			viewport.focus();
+		} else if (mod && e.key.toLowerCase() === "s") {
+			e.preventDefault();
+			commitEdit();
+			viewport.focus();
+			onsave?.();
+		}
+	}
+
+	function setNull(row: number, col: number) {
+		const d = display[row];
+		if (d && canEdit(row, col)) writeCell(d.id, d.base, col, null);
+	}
+
+	function revert(row: number, col: number) {
+		const d = display[row];
+		if (d && edits) revertCell(edits, d.id, col);
+	}
+
+	function toggleRowDelete(row: number) {
+		const d = display[row];
+		if (!d || !edits || !editable) return;
+		editing = null;
+		toggleDelete(edits, d.id, d.base);
+		if (active && active.row >= display.length) active = display.length ? { row: display.length - 1, col: active.col } : null;
+	}
+
+	function newRow(values: Record<number, string | null> = {}) {
+		if (!edits || !editable) return;
+		addPendingRow(edits, values);
+		viewport.focus();
+		startEdit(display.length - 1, firstEditable);
+	}
+
+	function duplicateRow(row: number) {
+		if (!editable) return;
+		// Key columns stay out: identity keys get their default, others are typed in.
+		const values: Record<number, string | null> = {};
+		editable.columns.forEach((c, i) => {
+			if (c && !editable.key.includes(i)) values[i] = valueAt(row, i);
+		});
+		newRow(values);
+	}
+
+	/** Adds an empty row at the end and starts editing it. */
+	export function addRow() {
+		newRow();
+	}
+
+	// ---- value dialog ---------------------------------------------------------
+
+	function openViewer(row: number, col: number) {
+		const v = valueAt(row, col);
 		const c = columns[col];
-		viewer = { title: c.name, value: v === null ? "NULL" : formatValue(v, c.kind), type: c.typeName };
+		const d = display[row];
+		const edit = canEdit(row, col) ? { id: d.id, base: d.base, col, wasNull: v === null } : null;
+		viewerText = v ?? "";
+		viewer = {
+			title: c.name,
+			value: v === null ? "NULL" : formatValue(v, c.kind),
+			type: c.typeName,
+			edit,
+		};
+	}
+
+	function applyViewer(value: string | null) {
+		const e = viewer?.edit;
+		viewer = null;
+		if (!e) return;
+		writeCell(e.id, e.base, e.col, value === "" && e.wasNull ? null : value);
+		viewport.focus();
 	}
 
 	function onkeydown(e: KeyboardEvent) {
-		if (rows.length === 0 || columns.length === 0) return;
+		if (display.length === 0 || columns.length === 0) {
+			if (editable && edits && e.key === "Insert") newRow();
+			return;
+		}
 		const cur = active ?? { row: 0, col: 0 };
 		const page = Math.max(1, Math.floor((viewport.clientHeight - HEAD_H) / ROW_H) - 1);
 		let { row, col } = cur;
@@ -196,33 +417,56 @@
 			case "PageDown": row += page; break;
 			case "PageUp": row -= page; break;
 			case "Home": if (mod) row = 0; col = 0; break;
-			case "End": if (mod) row = rows.length - 1; col = columns.length - 1; break;
+			case "End": if (mod) row = display.length - 1; col = columns.length - 1; break;
 			case "Enter":
-				if (active) openViewer(active.row, active.col);
+			case "F2":
 				e.preventDefault();
+				if (!active) return;
+				if (canEdit(active.row, active.col)) startEdit(active.row, active.col);
+				else if (e.key === "Enter") openViewer(active.row, active.col);
 				return;
-			case "c":
-			case "C":
-				if (mod && active) {
+			case "Delete":
+				if (active && editable && !mod) {
+					e.preventDefault();
+					toggleRowDelete(active.row);
+				}
+				return;
+			case "Insert":
+				if (editable && edits) {
+					e.preventDefault();
+					newRow();
+				}
+				return;
+			default: {
+				const k = e.key.toLowerCase();
+				if (mod && k === "c" && active) {
 					e.preventDefault();
 					if (e.shiftKey) copy(rowTsv(active.row), "Row");
 					else copy(valueAt(active.row, active.col) ?? "", "Value");
+				} else if (mod && k === "s" && onsave) {
+					e.preventDefault();
+					e.stopPropagation();
+					onsave();
+				} else if (mod && k === "z" && active && !e.shiftKey) {
+					e.preventDefault();
+					revert(active.row, active.col);
+				} else if (e.key.length === 1 && !mod && !e.altKey && active && canEdit(active.row, active.col)) {
+					// Typing over a cell starts editing it with the typed text.
+					e.preventDefault();
+					startEdit(active.row, active.col, e.key);
 				}
 				return;
-			default:
-				return;
+			}
 		}
 		e.preventDefault();
-		row = Math.min(Math.max(row, 0), rows.length - 1);
-		col = Math.min(Math.max(col, 0), columns.length - 1);
-		active = { row, col };
-		ensureVisible(row, col);
+		moveTo(row, col);
 	}
 
-	function oncontextmenu(e: MouseEvent, display: number, col: number) {
+	function oncontextmenu(e: MouseEvent, row: number, col: number) {
 		e.preventDefault();
-		active = { row: display, col };
-		menu = { x: e.clientX, y: e.clientY, row: display, col };
+		commitEdit();
+		active = { row, col };
+		menu = { x: e.clientX, y: e.clientY, row, col };
 	}
 
 	export function copyAll() {
@@ -236,22 +480,29 @@
 	onscroll={() => (scrollTop = viewport.scrollTop)}
 	role="grid"
 	aria-label={label}
-	aria-rowcount={rows.length + 1}
+	aria-rowcount={display.length + 1}
 	aria-colcount={columns.length + 1}
 	tabindex="0"
 	{onkeydown}
 >
-	<div class="lq-grid__inner" style="--cols:{template};--total-w:{totalWidth}px;--total-h:{HEAD_H + rows.length * ROW_H}px">
+	<div class="lq-grid__inner" style="--cols:{template};--total-w:{totalWidth}px;--total-h:{HEAD_H + display.length * ROW_H}px">
 		<div class="lq-grid__head" role="row" aria-rowindex={1}>
 			<div class="lq-grid__corner" role="columnheader">#</div>
 			{#each columns as c, ci (ci)}
+				{@const readOnly = !!editable && editable.columns[ci] == null}
 				<div
 					class="lq-grid__th"
 					class:lq-grid__th--num={c.kind === "number"}
+					class:lq-grid__th--ro={readOnly}
 					role="columnheader"
 					aria-sort={sort?.col === ci ? (sort.dir === 1 ? "ascending" : "descending") : "none"}
 				>
-					<button class="lq-grid__th-btn" type="button" onclick={() => toggleSort(ci)} title="{c.name} · {c.typeName}">
+					<button
+						class="lq-grid__th-btn"
+						type="button"
+						onclick={() => toggleSort(ci)}
+						title="{c.name} · {c.typeName}{readOnly ? ' · read-only (not a column of ' + editable?.table + ')' : ''}"
+					>
 						<span class="lq-grid__th-name">{c.name}</span>
 						<span class="lq-grid__th-type">{c.typeName}</span>
 						{#if sort?.col === ci}
@@ -269,32 +520,62 @@
 				</div>
 			{/each}
 		</div>
-		{#each visible as v (v.row)}
+		{#each visible as v (v.id)}
+			{@const change = edits?.[v.id]}
 			<div
 				class="lq-grid__row"
 				class:lq-grid__row--odd={v.display % 2 === 1}
+				class:lq-grid__row--deleted={change?.op === "delete"}
+				class:lq-grid__row--inserted={change?.op === "insert"}
 				role="row"
 				aria-rowindex={v.display + 2}
 				style="--top:{HEAD_H + v.display * ROW_H}px"
 			>
-				<div class="lq-grid__rownum" role="rowheader">{v.display + 1}</div>
+				<div
+					class="lq-grid__rownum"
+					role="rowheader"
+					title={change?.op === "insert" ? "New row" : change?.op === "delete" ? "Deleted on save" : undefined}
+				>
+					{change?.op === "insert" ? "+" : v.display + 1}
+				</div>
 				{#each columns as c, ci (ci)}
-					{@const value = rows[v.row][ci]}
+					{@const value = edits ? cellValue(edits, v.id, original(v), ci) : rows[v.base ?? 0][ci]}
+					{@const isDefault = change?.op === "insert" && !(ci in change.values)}
+					{@const isActive = active?.row === v.display && active?.col === ci}
+					{@const isEditing = editing?.id === v.id && editing?.col === ci}
 					<div
 						class="lq-grid__td"
 						class:lq-grid__td--num={c.kind === "number"}
 						class:lq-grid__td--null={value === null}
-						class:lq-grid__td--active={active?.row === v.display && active?.col === ci}
+						class:lq-grid__td--edited={!!edits && isCellEdited(edits, v.id, ci)}
+						class:lq-grid__td--active={isActive}
+						class:lq-grid__td--editing={isEditing}
 						role="gridcell"
 						tabindex="-1"
 						aria-colindex={ci + 2}
-						aria-selected={active?.row === v.display && active?.col === ci}
+						aria-selected={isActive}
 						onclick={() => select(v.display, ci)}
-						ondblclick={() => openViewer(v.display, ci)}
+						ondblclick={() => (canEdit(v.display, ci) ? startEdit(v.display, ci) : openViewer(v.display, ci))}
 						oncontextmenu={(e) => oncontextmenu(e, v.display, ci)}
 						onkeydown={() => {}}
 					>
-						{value === null ? "NULL" : value.length > 300 ? value.slice(0, 300) + "…" : value}
+						{#if isEditing && editing}
+							<input
+								class="lq-grid__input"
+								aria-label="Edit {c.name}"
+								spellcheck="false"
+								autocomplete="off"
+								placeholder={editing.wasNull ? "NULL" : ""}
+								bind:value={editing.value}
+								use:focusInput={editing.typed}
+								onkeydown={inputKey}
+								onblur={commitEdit}
+							/>
+						{:else if isDefault}
+							<span class="lq-grid__default">DEFAULT</span>
+						{:else}
+							{value === null ? "NULL" : value.length > 300 ? value.slice(0, 300) + "…" : value}
+						{/if}
 					</div>
 				{/each}
 			</div>
@@ -303,27 +584,47 @@
 </div>
 
 {#if menu}
+	{@const m = menu}
+	{@const cellEditable = canEdit(m.row, m.col)}
+	{@const rowChange = edits?.[display[m.row]?.id ?? ""]}
 	<DropdownMenu
 		open={true}
-		anchor={{ x: menu.x, y: menu.y }}
+		anchor={{ x: m.x, y: m.y }}
 		onOpenChange={(o) => {
 			if (!o) menu = null;
 		}}
 	>
-		<DropdownMenuItem onclick={() => menu && copy(valueAt(menu.row, menu.col) ?? "", "Value")}>
+		{#if cellEditable}
+			<DropdownMenuItem onclick={() => startEdit(m.row, m.col)}>
+				{#snippet icon()}<Pencil size={15} />{/snippet}
+				Edit value
+			</DropdownMenuItem>
+			<DropdownMenuItem onclick={() => setNull(m.row, m.col)}>
+				{#snippet icon()}<CircleSlash size={15} />{/snippet}
+				Set NULL
+			</DropdownMenuItem>
+			{#if edits && isCellEdited(edits, display[m.row].id, m.col)}
+				<DropdownMenuItem onclick={() => revert(m.row, m.col)}>
+					{#snippet icon()}<Undo2 size={15} />{/snippet}
+					Revert value
+				</DropdownMenuItem>
+			{/if}
+			<DropdownMenuSeparator />
+		{/if}
+		<DropdownMenuItem onclick={() => copy(valueAt(m.row, m.col) ?? "", "Value")}>
 			{#snippet icon()}<Copy size={15} />{/snippet}
 			Copy value
 		</DropdownMenuItem>
-		<DropdownMenuItem onclick={() => menu && copy(rowTsv(menu.row), "Row")}>
+		<DropdownMenuItem onclick={() => copy(rowTsv(m.row), "Row")}>
 			{#snippet icon()}<Rows3 size={15} />{/snippet}
 			Copy row
 		</DropdownMenuItem>
-		<DropdownMenuItem onclick={() => menu && copy(columns[menu.col].name, "Column name")}>
+		<DropdownMenuItem onclick={() => copy(columns[m.col].name, "Column name")}>
 			{#snippet icon()}<Table2 size={15} />{/snippet}
 			Copy column name
 		</DropdownMenuItem>
 		<DropdownMenuSeparator />
-		<DropdownMenuItem onclick={() => menu && openViewer(menu.row, menu.col)}>
+		<DropdownMenuItem onclick={() => openViewer(m.row, m.col)}>
 			{#snippet icon()}<Eye size={15} />{/snippet}
 			View full value
 		</DropdownMenuItem>
@@ -331,6 +632,30 @@
 			{#snippet icon()}<Copy size={15} />{/snippet}
 			Copy all (with header)
 		</DropdownMenuItem>
+		{#if editable && edits}
+			<DropdownMenuSeparator />
+			<DropdownMenuItem onclick={() => newRow()}>
+				{#snippet icon()}<Plus size={15} />{/snippet}
+				Add row
+			</DropdownMenuItem>
+			{#if rowChange?.op !== "delete"}
+				<DropdownMenuItem onclick={() => duplicateRow(m.row)}>
+					{#snippet icon()}<CopyPlus size={15} />{/snippet}
+					Duplicate row
+				</DropdownMenuItem>
+			{/if}
+			{#if rowChange?.op === "delete"}
+				<DropdownMenuItem onclick={() => toggleRowDelete(m.row)}>
+					{#snippet icon()}<RotateCcw size={15} />{/snippet}
+					Restore row
+				</DropdownMenuItem>
+			{:else}
+				<DropdownMenuItem onclick={() => toggleRowDelete(m.row)}>
+					{#snippet icon()}<Trash2 size={15} />{/snippet}
+					{rowChange?.op === "insert" ? "Remove new row" : "Delete row"}
+				</DropdownMenuItem>
+			{/if}
+		{/if}
 	</DropdownMenu>
 {/if}
 
@@ -338,16 +663,37 @@
 	<Dialog
 		open={true}
 		title={viewer.title}
-		description={viewer.type}
+		description={viewer.edit ? `${viewer.type} · editing` : viewer.type}
 		size="lg"
 		onOpenChange={(o) => {
 			if (!o) viewer = null;
 		}}
 	>
-		<pre class="lq-viewer">{viewer.value}</pre>
+		{#if viewer.edit}
+			<TextArea
+				label="Value"
+				hideLabel
+				class="lq-viewer-edit"
+				rows={14}
+				spellcheck={false}
+				placeholder={viewer.edit.wasNull ? "NULL" : ""}
+				bind:value={viewerText}
+			/>
+		{:else}
+			<pre class="lq-viewer">{viewer.value}</pre>
+		{/if}
 		{#snippet actions()}
-			<CopyButton value={viewer?.value ?? ""} label="Copy" variant="outlined" />
-			<Button variant="filled" onclick={() => (viewer = null)}>Close</Button>
+			{#if viewer?.edit}
+				<Button variant="ghost" onclick={() => applyViewer(null)}>
+					{#snippet leading()}<CircleSlash size={14} />{/snippet}
+					Set NULL
+				</Button>
+				<Button variant="outlined" onclick={() => (viewer = null)}>Cancel</Button>
+				<Button variant="filled" onclick={() => applyViewer(viewerText)}>Apply</Button>
+			{:else}
+				<CopyButton value={viewer?.value ?? ""} label="Copy" variant="outlined" />
+				<Button variant="filled" onclick={() => (viewer = null)}>Close</Button>
+			{/if}
 		{/snippet}
 	</Dialog>
 {/if}
@@ -460,6 +806,13 @@
 		white-space: nowrap;
 		text-overflow: ellipsis;
 	}
+	.lq-grid__th--ro .lq-grid__th-name {
+		color: var(--ca-text-secondary);
+		font-weight: 500;
+	}
+	.lq-grid__th--ro .lq-grid__th-type {
+		font-style: italic;
+	}
 	.lq-grid__resize {
 		position: absolute;
 		top: 0;
@@ -490,6 +843,24 @@
 	.lq-grid__row:hover {
 		background: var(--ca-action-hover);
 	}
+	.lq-grid__row--inserted {
+		background: color-mix(in oklab, var(--ca-semantic-success) 9%, transparent);
+	}
+	.lq-grid__row--inserted .lq-grid__rownum {
+		color: var(--ca-semantic-success);
+		font-weight: 700;
+	}
+	.lq-grid__row--deleted {
+		background: color-mix(in oklab, var(--ca-semantic-error) 9%, transparent);
+	}
+	.lq-grid__row--deleted .lq-grid__td {
+		color: var(--ca-text-hint);
+		text-decoration: line-through;
+		text-decoration-color: var(--ca-semantic-error);
+	}
+	.lq-grid__row--deleted .lq-grid__rownum {
+		color: var(--ca-semantic-error);
+	}
 	.lq-grid__td {
 		overflow: hidden;
 		min-width: 0;
@@ -508,9 +879,45 @@
 		color: var(--ca-text-hint);
 		font-style: italic;
 	}
+	.lq-grid__td--edited {
+		background: color-mix(in oklab, var(--ca-brand-main) 30%, transparent);
+		color: var(--ca-text-primary);
+	}
 	.lq-grid__td--active {
 		box-shadow: inset 0 0 0 2px var(--ca-state-indicator);
 		background: var(--ca-action-selected);
+	}
+	.lq-grid__td--active.lq-grid__td--edited {
+		background: color-mix(in oklab, var(--ca-brand-main) 42%, transparent);
+	}
+	.lq-grid__td--editing {
+		padding: 0;
+		overflow: visible;
+	}
+	.lq-grid__input {
+		display: block;
+		width: 100%;
+		height: 100%;
+		margin: 0;
+		padding: 0 7px;
+		border: 0;
+		outline: 2px solid var(--ca-brand-main);
+		outline-offset: -2px;
+		background: var(--ca-surface-raised);
+		color: var(--ca-text-primary);
+		font: inherit;
+		font-style: normal;
+		text-align: inherit;
+	}
+	.lq-grid__input::placeholder {
+		color: var(--ca-text-hint);
+		font-style: italic;
+	}
+	.lq-grid__default {
+		color: var(--ca-text-hint);
+		font-size: 11px;
+		font-style: italic;
+		letter-spacing: 0.04em;
 	}
 	.lq-viewer {
 		max-height: 60vh;
@@ -523,5 +930,9 @@
 		font-size: 13px;
 		white-space: pre-wrap;
 		word-break: break-word;
+	}
+	:global(.lq-viewer-edit textarea) {
+		font-family: var(--ca-font-mono);
+		font-size: 13px;
 	}
 </style>

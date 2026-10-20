@@ -4,6 +4,14 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- Edit query results in the grid: change cells, set NULL, add, duplicate and delete rows, then **Save** (Ctrl+S) or **Discard**. Pending changes are highlighted, new rows show `DEFAULT` for the columns left empty, and deleted rows are struck through. Saving writes all changes in one transaction with autocommit on, or inside the open transaction otherwise, and the result refreshes in place.
+- A result is editable when it comes from one table and includes its primary key (or a unique key with NOT NULL columns). The table and key come from the database's own result metadata, and a **Read-only** chip explains why a result cannot be edited. Computed columns stay read-only.
+- Running another query, switching connections or closing a tab with unsaved changes asks first.
+
+### Changed
+- The value viewer edits long and multi-line values when the result is editable.
+
 ## [0.2.1] - 2026-10-19
 
 ### Added
