@@ -46,6 +46,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 - **Large tables are safe to open.** The row limit is applied by the server, so `SELECT *` on a big table does not pull it across the network.
 - **Oracle without the client install, and with yours when you have it.** No Oracle Client is required, yet LowQuery reads the `tnsnames.ora` your machine already uses: from `TNS_ADMIN`, `ORACLE_HOME`, the Oracle homes in the Windows registry or an Instant Client on `PATH`. Pick an alias, import many at once, or connect by service name, SID, descriptor or Easy Connect, as SYSDBA when needed.
 - **Passwords stay in your keychain.** Profiles are a plain JSON file; passwords live in Windows Credential Manager, macOS Keychain or Linux Secret Service.
+- **Bring your connections with you.** Import them from DBeaver, DataGrip, pgAdmin 4, Oracle SQL Developer or `tnsnames.ora`. DBeaver's saved passwords go straight to your system keychain.
 - **Edit rows where you read them.** When a result comes from one table and includes its primary key, change cells, add, duplicate or delete rows in the grid and save them in one transaction. LowQuery asks the database which table and key each column comes from instead of guessing from the SQL, binds every value with its column type, and undoes the whole save when a row's key no longer matches exactly one row.
 - **Errors you can act on.** Native codes (SQLSTATE, ORA-NNNNN), detail and hint, with the failing token underlined in the editor.
 
@@ -88,7 +89,8 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 ### Run your first query
 
 1. Open LowQuery and choose **New connection**.
-2. Choose the database by its logo, fill in the server and user (or the file, for SQLite), and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client; **Import from tnsnames.ora** in the sidebar creates one connection per alias.
+2. Choose the database by its logo, fill in the server and user (or the file, for SQLite), and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client.
+   Already use another tool? **Import connections** in the sidebar brings them from DBeaver (with user names and saved passwords), DataGrip, pgAdmin 4, Oracle SQL Developer or a `tnsnames.ora`, without changing anything in the other tool.
 3. Save. The connection appears in the sidebar; expand it to browse schemas, tables and columns.
 4. Type SQL in the editor and press **Ctrl+Enter** (⌘+Enter on macOS) to run the statement under the cursor, or **Ctrl+Shift+Enter** / **F5** to run the whole script.
 

@@ -6,6 +6,7 @@
 	import QueryView from "./lib/components/QueryView.svelte";
 	import ConnectionDialog from "./lib/components/ConnectionDialog.svelte";
 	import TnsImportDialog from "./lib/components/TnsImportDialog.svelte";
+	import ImportDialog from "./lib/components/ImportDialog.svelte";
 	import UpdateDialog from "./lib/components/UpdateDialog.svelte";
 	import { updates } from "./lib/state/updates.svelte";
 	import PasswordDialog from "./lib/components/PasswordDialog.svelte";
@@ -121,6 +122,7 @@
 {/if}
 
 <ConnectionDialog />
+<ImportDialog />
 <TnsImportDialog />
 <UpdateDialog />
 <PasswordDialog />

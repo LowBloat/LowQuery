@@ -1,5 +1,6 @@
 mod drivers;
 mod error;
+mod import;
 mod model;
 mod profiles;
 mod updates;
@@ -230,6 +231,37 @@ async fn oracle_tns_sources() -> AppResult<Vec<drivers::tns::TnsSource>> {
         .map_err(|e| AppError::internal(e.to_string()))
 }
 
+/// Connection files of other database tools found on this machine.
+#[tauri::command]
+async fn import_detect() -> AppResult<Vec<import::ImportSource>> {
+    tauri::async_runtime::spawn_blocking(import::detect)
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))
+}
+
+/// Reads one tool file and lists what can be imported (without passwords).
+#[tauri::command]
+async fn import_preview(
+    tool: import::ImportTool,
+    path: String,
+) -> AppResult<import::ImportPreview> {
+    tauri::async_runtime::spawn_blocking(move || import::preview(tool, &path))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+/// Creates profiles for the chosen connections of a tool file.
+#[tauri::command]
+fn import_apply(
+    state: State<'_, AppState>,
+    tool: import::ImportTool,
+    path: String,
+    keys: Vec<String>,
+    with_passwords: bool,
+) -> AppResult<import::ImportResult> {
+    import::apply(&state.profiles, tool, &path, &keys, with_passwords)
+}
+
 /// Reads the `tnsnames.ora` in a folder picked by the user.
 #[tauri::command]
 async fn oracle_tns_folder(path: String) -> AppResult<drivers::tns::TnsSource> {
@@ -301,6 +333,9 @@ pub fn run() {
             write_text_file,
             oracle_tns_sources,
             oracle_tns_folder,
+            import_detect,
+            import_preview,
+            import_apply,
             updates::update_policy,
         ])
         .run(tauri::generate_context!())

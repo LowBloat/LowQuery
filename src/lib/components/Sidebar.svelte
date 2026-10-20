@@ -44,8 +44,9 @@
 		ArrowUpCircle,
 	} from "@lucide/svelte";
 	import { updates } from "../state/updates.svelte";
-	import { tns } from "../state/tns.svelte";
+	import { importer } from "../state/importer.svelte";
 	import EngineLogo from "./EngineLogo.svelte";
+	import { connectionSummary } from "../summary";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer, RELATION_KINDS, REDIS_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
@@ -113,20 +114,6 @@
 	}
 
 	/** Second line of a connection row: user@target, or the SQLite file name. */
-	function connectionSummary(p: ConnectionProfile): string {
-		if (p.engine === "sqlite") return p.database.split(/[\\/]/).pop() ?? p.database;
-		const target =
-			p.engine === "oracle" && p.oracleConnectType === "tns"
-				? p.tnsAlias
-				: p.engine === "oracle" && p.oracleConnectType === "custom"
-					? "descriptor"
-					: p.instance
-						? `${p.host}\\${p.instance}`
-						: p.host;
-		if (p.engine === "sqlserver" && p.windowsAuth) return `Windows · ${target}`;
-		return `${p.user}@${target}`;
-	}
-
 	function newQuery(p: ConnectionProfile) {
 		workspace.newTab(p.id);
 		onnavigate?.();
@@ -179,8 +166,8 @@
 	<div class="lq-side__section">
 		<h2 class="lq-side__title">Connections</h2>
 		<span class="ca-toolbar-spacer"></span>
-		<Tooltip content="Import Oracle connections from tnsnames.ora">
-			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="Import from tnsnames.ora" onclick={() => (tns.importOpen = true)}>
+		<Tooltip content="Import connections from DBeaver, DataGrip, pgAdmin, SQL Developer or tnsnames.ora">
+			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="Import connections" onclick={() => importer.show()}>
 				<FileInput size={16} />
 			</IconButton>{/snippet}
 		</Tooltip>
@@ -203,6 +190,10 @@
 						<Button size="sm" variant="filled" onclick={() => (workspace.editing = emptyProfile())}>
 							{#snippet leading()}<Plus size={14} />{/snippet}
 							New connection
+						</Button>
+						<Button size="sm" variant="outlined" onclick={() => importer.show()}>
+							{#snippet leading()}<FileInput size={14} />{/snippet}
+							Import
 						</Button>
 					{/snippet}
 				</EmptyState>

@@ -218,6 +218,78 @@ function applyChanges(req: { target: EditTarget; changes: RowChange[] }): ApplyR
 	return out;
 }
 
+const IMPORT_SOURCES = [
+	{
+		tool: "dbeaver",
+		label: "DBeaver · General",
+		path: String.raw`C:\Users\dev\AppData\Roaming\DBeaverData\workspace6\General\.dbeaver\data-sources.json`,
+		count: 5,
+		error: null,
+	},
+	{
+		tool: "dbeaver",
+		label: "DBeaver · Clients",
+		path: String.raw`C:\Users\dev\AppData\Roaming\DBeaverData\workspace6\Clients\.dbeaver\data-sources.json`,
+		count: 0,
+		error: "This is not a DBeaver data sources file.",
+	},
+	{
+		tool: "sql-developer",
+		label: "SQL Developer 23.1",
+		path: String.raw`C:\Users\dev\AppData\Roaming\SQL Developer\system23.1.0.097.1607\o.jdeveloper.db.connection\connections.json`,
+		count: 2,
+		error: null,
+	},
+];
+
+// What the backend returns for a tool file (see src-tauri/src/import).
+function importPreview(tool: string) {
+	const cand = (key: string, profile: Partial<ConnectionProfile>, extra: Record<string, unknown> = {}) => ({
+		key,
+		profile: { ...emptyProfile(profile.engine ?? "postgres"), ...profile, id: "" },
+		folder: null as string | null,
+		hasPassword: false,
+		warnings: [] as string[],
+		...extra,
+	});
+	if (tool === "sql-developer") {
+		return {
+			candidates: [
+				cand("c1", { engine: "oracle", name: "ERP produção", host: "", oracleConnectType: "tns", tnsAlias: "ERPPRD", user: "REPORTS", color: "#dc2626" }),
+				cand("c2", { engine: "oracle", name: "BI", host: "bi-db.internal", port: 1522, database: "bipdb", user: "BI_READ" }),
+			],
+			skipped: [],
+			notes: ["SQL Developer encrypts passwords with a key tied to its installation; type them on the first connection."],
+		};
+	}
+	return {
+		candidates: [
+			cand("pg-local", { engine: "postgres", name: "Local", host: "localhost", port: 5432, database: "shop", user: "postgres" }, { hasPassword: true }),
+			cand(
+				"pg-sales",
+				{ engine: "postgres", name: "Sales replica", host: "sales-ro.internal", database: "sales", user: "analyst", sslMode: "verify-full" },
+				{ folder: "Production", hasPassword: true, warnings: ["The SSH tunnel through bastion.internal was not imported."] },
+			),
+			cand(
+				"ora-erp",
+				{ engine: "oracle", name: "ERP (prod)", host: "", oracleConnectType: "tns", tnsAlias: "ERPPRD", configDir: String.raw`C:\oracle\network\admin`, user: "SIGACON", color: "#dc2626" },
+				{ folder: "Production/ERP", hasPassword: true },
+			),
+			cand(
+				"ms-fin",
+				{ engine: "sqlserver", name: "Finance", host: "fin-sql.internal", port: 1433, instance: "REPORTING", database: "Finance", windowsAuth: true, user: "" },
+				{ folder: "Production" },
+			),
+			cand("my-shop", { engine: "mariadb", name: "Storefront staging", host: "store-stg.internal", port: 3306, database: "store", user: "app", color: "#f59e0b" }, { hasPassword: true }),
+		],
+		skipped: [
+			{ name: "Warehouse", reason: "Snowflake is not supported by LowQuery." },
+			{ name: "Mainframe", reason: "DB2 for z/OS is not supported by LowQuery." },
+		],
+		notes: [] as string[],
+	};
+}
+
 export function installDevMock() {
 	let n = 0;
 	mockIPC(async (cmd, payload) => {
@@ -258,6 +330,20 @@ export function installDevMock() {
 				return execute(args.request.sql, args.request.maxRows);
 			case "apply_changes":
 				return applyChanges(args.request);
+			case "import_detect":
+				return IMPORT_SOURCES;
+			case "import_preview":
+				return { tool: args.tool, path: args.path, ...importPreview(args.tool) };
+			case "import_apply": {
+				const { candidates } = importPreview(args.tool);
+				let passwords = 0;
+				for (const key of args.keys as string[]) {
+					const c = candidates.find((x) => x.key === key)!;
+					if (c.hasPassword && args.withPasswords) passwords++;
+					profiles.push({ ...c.profile, id: `p${++n}` });
+				}
+				return { created: args.keys.length, passwords };
+			}
 			case "list_schemas":
 				return ["public", "sales", "audit", "information_schema", "pg_catalog"];
 			case "list_objects":

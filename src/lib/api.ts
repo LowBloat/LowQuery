@@ -119,6 +119,40 @@ export interface TnsEntry {
 }
 
 /** A folder with a tnsnames.ora found on this machine or picked by the user. */
+/** Database tools LowQuery imports connections from. */
+export type ImportTool = "dbeaver" | "datagrip" | "pgadmin" | "sql-developer";
+
+/** A connection file of another tool found on this machine. */
+export interface ImportSource {
+	tool: ImportTool;
+	label: string;
+	path: string;
+	count: number;
+	error: string | null;
+}
+
+export interface ImportCandidate {
+	key: string;
+	/** The profile to create (empty id). */
+	profile: ConnectionProfile;
+	folder: string | null;
+	hasPassword: boolean;
+	warnings: string[];
+}
+
+export interface ImportPreview {
+	tool: ImportTool;
+	path: string;
+	candidates: ImportCandidate[];
+	skipped: { name: string; reason: string }[];
+	notes: string[];
+}
+
+export interface ImportResult {
+	created: number;
+	passwords: number;
+}
+
 export interface TnsSource {
 	dir: string;
 	/** Oracle home name (OraClient19Home1) or the folder. */
@@ -223,6 +257,11 @@ export const api = {
 		invoke<DbObject[]>("list_objects", { sessionId, schema }),
 	oracleTnsSources: () => invoke<TnsSource[]>("oracle_tns_sources"),
 	oracleTnsFolder: (path: string) => invoke<TnsSource>("oracle_tns_folder", { path }),
+	importDetect: () => invoke<ImportSource[]>("import_detect"),
+	importPreview: (tool: ImportTool, path: string) => invoke<ImportPreview>("import_preview", { tool, path }),
+	/** Passwords are read again from the tool file by the backend, never sent here. */
+	importApply: (tool: ImportTool, path: string, keys: string[], withPasswords: boolean) =>
+		invoke<ImportResult>("import_apply", { tool, path, keys, withPasswords }),
 	listColumns: (sessionId: string, schema: string, table: string) =>
 		invoke<DbColumn[]>("list_columns", { sessionId, schema, table }),
 };

@@ -1,6 +1,6 @@
 [package]
 name = "lowquery"
-version = "0.3.1"
+version = "0.3.2"
 description = "Lightweight SQL client for multiple databases"
 authors = ["LowBloat"]
 license = "AGPL-3.0-only"
@@ -50,6 +50,11 @@ redis = { version = "1.7", default-features = false, features = ["aio", "tokio-c
 # SQLite: embedded engine compiled into the app.
 rusqlite = { version = "0.40", features = ["bundled", "column_decltype", "column_metadata"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+# DBeaver import: credentials-config.json is AES-128-CBC.
+aes = "0.9"
+cbc = "0.2"
+# DataGrip and SQL Developer import: XML connection files.
+quick-xml = "0.42"
 
 # Oracle homes registered by Windows installers.
 [target.'cfg(windows)'.dependencies]

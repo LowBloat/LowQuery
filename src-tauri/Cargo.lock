@@ -2607,8 +2607,10 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "lowquery"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
+ "aes",
+ "cbc",
  "chrono",
  "directories",
  "futures-util",
@@ -2616,6 +2618,7 @@ dependencies = [
  "mysql_async",
  "oracledb",
  "parking_lot",
+ "quick-xml",
  "redis",
  "rusqlite",
  "rustls",

@@ -4,6 +4,17 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-10-20
+
+### Added
+- **Import connections** in the sidebar (and on the empty sidebar) replaces the tnsnames.ora button. It finds the connection files of other tools on this computer, or opens one you choose, lists what can be imported with folders, colors and what was left out, marks connections you already have, and creates the profiles you select:
+  - DBeaver (`data-sources*.json` of every project, Snap and Flatpak installs included), with user names and saved passwords decrypted from `credentials-config.json` and stored in the system keychain.
+  - DataGrip and other JetBrains IDEs (global and project `dataSources.xml`, user names from `dataSources.local.xml`).
+  - pgAdmin 4 (`pgadmin4.db`, read-only, or an exported `servers.json`).
+  - Oracle SQL Developer (`connections.json` or `connections.xml`, every installed version).
+  - Oracle `tnsnames.ora`, as before.
+- PostgreSQL, Oracle (service, SID, TNS alias, descriptor, SYSDBA and other roles), MySQL, MariaDB, SQL Server (named instances, Windows authentication), SQLite and Redis connections are mapped, including TLS settings. Settings LowQuery does not support (SSH tunnels, client certificates, init SQL...) are listed per connection, and unsupported databases are shown with the reason.
+
 ## [0.3.1] - 2026-10-20
 
 ### Fixed
@@ -80,7 +91,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/LowBloat/LowQuery/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...v0.2.1
