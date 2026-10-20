@@ -4,6 +4,15 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-20
+
+### Fixed
+- Oracle: running a query again on wide tables with repeated values (ERP tables such as Protheus `SA1010`) failed with "internal error: unknown TTC message type" and left the connection unusable. LowQuery now ships the Oracle driver with that fixed in its parser.
+- Oracle: if the driver ever loses its place in a server reply, the session reopens its connection instead of failing every later statement, and says so (and whether an open transaction was rolled back).
+
+### Changed
+- CI also runs the Oracle tests against Oracle XE 21c, which handles multi-packet replies like 19c does.
+
 ## [0.3.0] - 2026-10-19
 
 ### Added
@@ -71,7 +80,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...v0.2.0
