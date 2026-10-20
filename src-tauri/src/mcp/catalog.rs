@@ -1067,18 +1067,34 @@ fn shifted(mut e: AppError, prefix: &str) -> AppError {
     e
 }
 
+/// MySQL and MariaDB refuse EXPLAIN of a DML statement inside a READ ONLY
+/// transaction (1792), although EXPLAIN never runs it. That plan is made in
+/// a read-write transaction that is rolled back, so nothing can change.
+async fn mysql_plan(session: &Session, text: &str) -> AppResult<ExecResult> {
+    match query(session, text, PLAN_ROWS).await {
+        Err(e) if e.code.as_deref().is_some_and(|c| c.starts_with("1792")) => {
+            query(session, "ROLLBACK", 0).await?;
+            query(session, "START TRANSACTION READ WRITE", 0).await?;
+            let r = query(session, text, PLAN_ROWS).await;
+            query(session, "ROLLBACK", 0).await?;
+            r
+        }
+        r => r,
+    }
+}
+
 /// MySQL 8.0.16+ prints a tree; MariaDB and older MySQL the classic table.
 async fn mysql_explain(session: &Session, sql: &str) -> AppResult<String> {
     if session.engine() == Engine::Mysql {
         let prefix = "EXPLAIN FORMAT=TREE ";
-        match query(session, &format!("{prefix}{sql}"), PLAN_ROWS).await {
+        match mysql_plan(session, &format!("{prefix}{sql}")).await {
             Ok(r) => return Ok(lines(&r, 0)),
             Err(e) if e.kind == ErrorKind::Database => {}
             Err(e) => return Err(shifted(e, prefix)),
         }
     }
     let prefix = "EXPLAIN ";
-    let r = query(session, &format!("{prefix}{sql}"), PLAN_ROWS)
+    let r = mysql_plan(session, &format!("{prefix}{sql}"))
         .await
         .map_err(|e| shifted(e, prefix))?;
     Ok(text_table(
@@ -1113,7 +1129,8 @@ async fn oracle_explain(session: &Session, sql: &str) -> AppResult<String> {
             .await;
             Ok(lines(&shown?, 0))
         }
-        Err(e) if e.code.as_deref() == Some("ORA-01456") => {
+        // Raised directly, or wrapped in ORA-00604 by the recursive insert.
+        Err(e) if e.code.as_deref() == Some("ORA-01456") || e.message.contains("ORA-01456") => {
             session.end_transaction(false).await?;
             let outcome = match query(session, &plan, 0).await {
                 Ok(_) => query(session, &display, PLAN_ROWS).await,

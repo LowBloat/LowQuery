@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Debug-build driver futures (SQL Server TLS above all) need more than the
+  # 2 MiB default stack of test and tokio worker threads.
+  RUST_MIN_STACK: "16777216"
+
 concurrency:
   group: verify-${{ github.workflow }}-${{ github.ref }}
   # Cancel superseded pull request runs, but let every push to main finish.

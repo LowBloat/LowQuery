@@ -1262,7 +1262,8 @@ async fn mcp_redis_server() {
                 json!({ "connection": ro, "sql": "LRANGE lq_mcp_e2e:list 0 -1", "max_rows": 2 }),
             )
             .await;
-        assert_eq!(cells(&r), ["a", "b"]);
+        // Lists come with their index.
+        assert_eq!(cells(&r), ["1", "a", "2", "b"]);
         assert_eq!(r["structuredContent"]["truncated"], true);
         let r = t
             .ok(

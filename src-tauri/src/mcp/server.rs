@@ -38,10 +38,21 @@ statement per call. Keep result sets small: select only the columns you need and
 SQL. Use explain to check the plan of a heavy query before running it. Use execute only when the user \
 asked for a change; read-only connections refuse changes.";
 
+/// Worker stack size: driver futures (SQL Server TLS handshakes above all)
+/// are large, and the default 2 MiB is tight for them.
+const WORKER_STACK: usize = 16 * 1024 * 1024;
+
 /// `lowquery mcp`: serves stdin/stdout until stdin closes.
 pub fn serve(config_dir: PathBuf) {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(WORKER_STACK)
+        .build()
+        .expect("could not start the async runtime");
+    // Drivers use tauri's runtime for blocking work; share this one.
+    tauri::async_runtime::set(runtime.handle().clone());
     let server = Arc::new(Server::new(config_dir, timeout_from_env()));
-    tauri::async_runtime::block_on(serve_io(server, tokio::io::stdin(), tokio::io::stdout()));
+    runtime.block_on(serve_io(server, tokio::io::stdin(), tokio::io::stdout()));
 }
 
 fn timeout_from_env() -> Duration {
@@ -534,7 +545,9 @@ impl Server {
             let session = match &slot.session {
                 Some(s) => s.clone(),
                 None => {
-                    let (opened, _) = self.bounded(None, cancel, open_session(profile)).await;
+                    let (opened, _) = self
+                        .bounded(None, cancel, Box::pin(open_session(profile)))
+                        .await;
                     let s = Arc::new(opened?);
                     slot.session = Some(s.clone());
                     s
