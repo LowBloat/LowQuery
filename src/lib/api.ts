@@ -38,6 +38,8 @@ export interface ConnectionProfile {
 	windowsAuth: boolean;
 	/** SQLite: create the file when it does not exist. */
 	createFile: boolean;
+	/** What AI agents may do through `lowquery mcp`. */
+	aiAccess: AiAccess;
 }
 
 export interface SessionInfo {
@@ -119,6 +121,40 @@ export interface TnsEntry {
 }
 
 /** A folder with a tnsnames.ora found on this machine or picked by the user. */
+export type AiAccess = "off" | "read" | "write";
+
+/** An AI client and how to make it start `lowquery mcp`. */
+export interface AiClient {
+	id: string;
+	name: string;
+	/** JSON file LowQuery can update; null when configured by hand. */
+	configPath: string | null;
+	installed: boolean;
+	configured: boolean;
+	snippet: string;
+	snippetKind: "json" | "toml" | "shell";
+}
+
+export interface AiSetup {
+	command: string;
+	args: string[];
+	clients: AiClient[];
+}
+
+/** One tool call made by an AI agent. */
+export interface AiActivity {
+	at: string;
+	client: string;
+	tool: string;
+	connectionId: string | null;
+	connectionName: string | null;
+	detail: string | null;
+	ok: boolean;
+	rows: number | null;
+	error: string | null;
+	elapsedMs: number;
+}
+
 /** Database tools LowQuery imports connections from. */
 export type ImportTool = "dbeaver" | "datagrip" | "pgadmin" | "sql-developer";
 
@@ -229,6 +265,7 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		instance: "",
 		windowsAuth: false,
 		createFile: false,
+		aiAccess: "off",
 	};
 }
 
@@ -257,6 +294,10 @@ export const api = {
 		invoke<DbObject[]>("list_objects", { sessionId, schema }),
 	oracleTnsSources: () => invoke<TnsSource[]>("oracle_tns_sources"),
 	oracleTnsFolder: (path: string) => invoke<TnsSource>("oracle_tns_folder", { path }),
+	aiSetup: () => invoke<AiSetup>("ai_setup"),
+	aiConnectClient: (id: string) => invoke<string>("ai_connect_client", { id }),
+	aiActivity: (limit = 200) => invoke<AiActivity[]>("ai_activity", { limit }),
+	aiActivityClear: () => invoke<void>("ai_activity_clear"),
 	importDetect: () => invoke<ImportSource[]>("import_detect"),
 	importPreview: (tool: ImportTool, path: string) => invoke<ImportPreview>("import_preview", { tool, path }),
 	/** Passwords are read again from the tool file by the backend, never sent here. */

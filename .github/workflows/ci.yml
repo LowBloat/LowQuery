@@ -232,6 +232,8 @@ jobs:
       - run: mkdir -p dist
       - name: Integration tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::mysql -- --ignored --test-threads=1
+      - name: MCP tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml mcp_mysql -- --ignored --test-threads=1
 
   sqlserver:
     name: SQL Server 2022 integration
@@ -267,6 +269,8 @@ jobs:
       - run: mkdir -p dist
       - name: Integration tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::sqlserver -- --ignored --test-threads=1
+      - name: MCP tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml mcp_sqlserver -- --ignored --test-threads=1
 
   redis:
     name: ${{ matrix.name }} integration
@@ -301,6 +305,8 @@ jobs:
       - run: mkdir -p dist
       - name: Integration tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::redis_db -- --ignored --test-threads=1
+      - name: MCP tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml mcp_redis -- --ignored --test-threads=1
 
   # Builds the native Arch package the release publishes. Manual runs only:
   # it compiles the whole app, which pull requests do not need.

@@ -9,7 +9,7 @@ import { workspace } from "./state/workspace.svelte";
 import { explorer } from "./state/explorer.svelte";
 
 const profiles: ConnectionProfile[] = [
-	{ ...emptyProfile("postgres"), id: "pg1", name: "Local", database: "shop", color: "#b8f238" },
+	{ ...emptyProfile("postgres"), id: "pg1", name: "Local", database: "shop", color: "#b8f238", aiAccess: "write" },
 	{
 		...emptyProfile("oracle"),
 		id: "ora1",
@@ -218,6 +218,32 @@ function applyChanges(req: { target: EditTarget; changes: RowChange[] }): ApplyR
 	return out;
 }
 
+const MCP_EXE = String.raw`C:\Users\dev\AppData\Local\LowQuery\lowquery.exe`;
+const mcpJson = (key: string, extra: Record<string, string> = {}) =>
+	JSON.stringify({ [key]: { lowquery: { ...extra, command: MCP_EXE, args: ["mcp"] } } }, null, 2);
+
+const AI_SETUP = {
+	command: MCP_EXE,
+	args: ["mcp"],
+	clients: [
+		{ id: "claude-desktop", name: "Claude Desktop", configPath: String.raw`C:\Users\dev\AppData\Roaming\Claude\claude_desktop_config.json`, installed: true, configured: false, snippet: mcpJson("mcpServers"), snippetKind: "json" },
+		{ id: "claude-code", name: "Claude Code", configPath: null, installed: true, configured: false, snippet: `claude mcp add --scope user lowquery -- ${MCP_EXE} mcp`, snippetKind: "shell" },
+		{ id: "cursor", name: "Cursor", configPath: String.raw`C:\Users\dev\.cursor\mcp.json`, installed: true, configured: true, snippet: mcpJson("mcpServers"), snippetKind: "json" },
+		{ id: "vscode", name: "VS Code", configPath: String.raw`C:\Users\dev\AppData\Roaming\Code\User\mcp.json`, installed: false, configured: false, snippet: mcpJson("servers", { type: "stdio" }), snippetKind: "json" },
+		{ id: "windsurf", name: "Windsurf", configPath: String.raw`C:\Users\dev\.codeium\windsurf\mcp_config.json`, installed: false, configured: false, snippet: mcpJson("mcpServers"), snippetKind: "json" },
+		{ id: "gemini", name: "Gemini CLI", configPath: String.raw`C:\Users\dev\.gemini\settings.json`, installed: false, configured: false, snippet: mcpJson("mcpServers"), snippetKind: "json" },
+		{ id: "codex", name: "Codex", configPath: null, installed: false, configured: false, snippet: `[mcp_servers.lowquery]\ncommand = "${MCP_EXE.replaceAll("\\", "\\\\")}"\nargs = ["mcp"]`, snippetKind: "toml" },
+	],
+};
+
+let aiActivity = [
+	{ at: "2026-10-20T14:02:11Z", client: "claude-ai 0.1.0", tool: "execute", connectionId: "pg1", connectionName: "Local", detail: "update customers set active = false where id = 1694", ok: true, rows: 1, error: null, elapsedMs: 9 },
+	{ at: "2026-10-20T14:01:40Z", client: "claude-ai 0.1.0", tool: "query", connectionId: "pg1", connectionName: "Local", detail: "select id, name, balance\n  from customers\n where active\n order by balance desc\n fetch first 10 rows only", ok: true, rows: 10, error: null, elapsedMs: 31 },
+	{ at: "2026-10-20T14:01:22Z", client: "claude-ai 0.1.0", tool: "describe_table", connectionId: "pg1", connectionName: "Local", detail: "public.customers", ok: true, rows: 7, error: null, elapsedMs: 12 },
+	{ at: "2026-10-20T14:01:05Z", client: "cursor 1.7.2", tool: "query", connectionId: "pg1", connectionName: "Local", detail: "delete from orders", ok: false, rows: null, error: "This connection is read-only for AI agents. Ask the user to allow changes in LowQuery (connection → AI access).", elapsedMs: 0 },
+	{ at: "2026-10-20T14:00:58Z", client: "claude-ai 0.1.0", tool: "list_connections", connectionId: null, connectionName: null, detail: null, ok: true, rows: 1, error: null, elapsedMs: 2 },
+];
+
 const IMPORT_SOURCES = [
 	{
 		tool: "dbeaver",
@@ -330,6 +356,18 @@ export function installDevMock() {
 				return execute(args.request.sql, args.request.maxRows);
 			case "apply_changes":
 				return applyChanges(args.request);
+			case "ai_setup":
+				return AI_SETUP;
+			case "ai_connect_client": {
+				const c = AI_SETUP.clients.find((x) => x.id === args.id)!;
+				c.configured = true;
+				return c.configPath;
+			}
+			case "ai_activity":
+				return aiActivity;
+			case "ai_activity_clear":
+				aiActivity = [];
+				return null;
 			case "import_detect":
 				return IMPORT_SOURCES;
 			case "import_preview":

@@ -68,6 +68,19 @@ impl OraclePrivilege {
     }
 }
 
+/// What AI agents connected through the MCP server may do with a connection.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum AiAccess {
+    /// Not listed to agents.
+    #[default]
+    Off,
+    /// Queries run read-only; changes are refused.
+    Read,
+    /// Agents may also change data and schema.
+    Write,
+}
+
 /// Saved connection profile. The password is never part of the profile: it
 /// lives in the OS credential store when `save_password` is on.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +115,8 @@ pub struct ConnectionProfile {
     pub windows_auth: bool,
     /// SQLite: create the file when it does not exist.
     pub create_file: bool,
+    /// Access for AI agents through `lowquery mcp`.
+    pub ai_access: AiAccess,
 }
 
 impl Default for ConnectionProfile {
@@ -125,6 +140,7 @@ impl Default for ConnectionProfile {
             instance: String::new(),
             windows_auth: false,
             create_file: false,
+            ai_access: AiAccess::Off,
         }
     }
 }

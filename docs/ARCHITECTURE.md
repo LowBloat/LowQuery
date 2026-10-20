@@ -36,6 +36,8 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/sqlserver.rs` | SQL Server and Azure SQL session on `tiberius` (TDS) |
 | `drivers/redis_db.rs` | Redis and Valkey session on `redis-rs` (RESP3) |
 | `drivers/sqlite.rs` | SQLite session on `rusqlite` (bundled engine) |
+| `mcp/` | `lowquery mcp`: MCP server over stdio for AI agents (`server.rs` protocol and sessions, `tools.rs`, `guard.rs` statement checks, `catalog.rs` search/foreign keys/plans per engine, `audit.rs` activity log); see [AI.md](AI.md) |
+| `ai_setup.rs` | The MCP command and the configuration of each AI client |
 | `import/` | Reads connection files of DBeaver, DataGrip, pgAdmin 4 and SQL Developer (`jdbc.rs` parses JDBC URLs); passwords go from the file to the keychain without reaching the interface |
 | `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
 | `drivers/integration_tests.rs` | Tests against real servers (`#[ignore]`, see CONTRIBUTING) |
@@ -95,6 +97,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/state/workspace.svelte.ts` | Tabs, sessions, execution, transactions, drafts, saving grid edits |
 | `lib/state/edits.ts` | Pending grid edits per result and the changes sent to `apply_changes` |
 | `lib/state/explorer.svelte.ts` | Schema browser and autocompletion namespace |
+| `lib/state/ai.svelte.ts` | AI agents dialog: client setup and activity |
 | `lib/state/importer.svelte.ts` | Import dialog: detected tool files, preview, duplicate check |
 | `lib/state/tns.svelte.ts` | Detected `tnsnames.ora` sources and aliases for the connection and import dialogs |
 | `lib/components/` | Editor, grid, results, sidebar, dialogs |

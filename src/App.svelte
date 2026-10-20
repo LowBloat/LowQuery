@@ -7,6 +7,7 @@
 	import ConnectionDialog from "./lib/components/ConnectionDialog.svelte";
 	import TnsImportDialog from "./lib/components/TnsImportDialog.svelte";
 	import ImportDialog from "./lib/components/ImportDialog.svelte";
+	import AiDialog from "./lib/components/AiDialog.svelte";
 	import UpdateDialog from "./lib/components/UpdateDialog.svelte";
 	import { updates } from "./lib/state/updates.svelte";
 	import PasswordDialog from "./lib/components/PasswordDialog.svelte";
@@ -123,6 +124,7 @@
 
 <ConnectionDialog />
 <ImportDialog />
+<AiDialog />
 <TnsImportDialog />
 <UpdateDialog />
 <PasswordDialog />

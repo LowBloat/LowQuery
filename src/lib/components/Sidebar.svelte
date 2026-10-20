@@ -15,6 +15,7 @@
 	import {
 		ChevronRight,
 		Plus,
+		Bot,
 		EllipsisVertical,
 		SquarePen,
 		Copy,
@@ -45,6 +46,7 @@
 	} from "@lucide/svelte";
 	import { updates } from "../state/updates.svelte";
 	import { importer } from "../state/importer.svelte";
+	import { ai } from "../state/ai.svelte";
 	import EngineLogo from "./EngineLogo.svelte";
 	import { connectionSummary } from "../summary";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
@@ -171,6 +173,11 @@
 				<FileInput size={16} />
 			</IconButton>{/snippet}
 		</Tooltip>
+		<Tooltip content="AI agents: MCP setup and activity">
+			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="AI agents" onclick={() => ai.show()}>
+				<Bot size={16} />
+			</IconButton>{/snippet}
+		</Tooltip>
 		<Tooltip content="New connection">
 			{#snippet triggerChild(props)}<IconButton {...props} size="sm" variant="text" aria-label="New connection" onclick={() => (workspace.editing = emptyProfile())}>
 				<Plus size={16} />
@@ -217,7 +224,14 @@
 								<EngineLogo engine={p.engine} size={18} />
 							</span>
 							<span class="lq-tree__conn-text">
-								<span class="lq-tree__label">{p.name}</span>
+								<span class="lq-tree__label"
+									>{p.name}{#if p.aiAccess && p.aiAccess !== "off"}<span
+											class="lq-tree__ai"
+											class:lq-tree__ai--write={p.aiAccess === "write"}
+											title={p.aiAccess === "write" ? "AI agents: read and write" : "AI agents: read only"}
+											><Bot size={12} aria-label="Open to AI agents" /></span
+										>{/if}</span
+								>
 								<span class="lq-tree__sub">{connectionSummary(p)}</span>
 							</span>
 						</button>
@@ -383,6 +397,15 @@
 {/if}
 
 <style>
+	.lq-tree__ai {
+		display: inline-flex;
+		margin-left: 6px;
+		color: var(--ca-text-hint);
+		vertical-align: -1px;
+	}
+	.lq-tree__ai--write {
+		color: var(--ca-semantic-warning);
+	}
 	.lq-side {
 		display: flex;
 		flex-direction: column;

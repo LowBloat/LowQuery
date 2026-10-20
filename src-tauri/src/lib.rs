@@ -1,6 +1,8 @@
+mod ai_setup;
 mod drivers;
 mod error;
 mod import;
+pub mod mcp;
 mod model;
 mod profiles;
 mod updates;
@@ -231,6 +233,29 @@ async fn oracle_tns_sources() -> AppResult<Vec<drivers::tns::TnsSource>> {
         .map_err(|e| AppError::internal(e.to_string()))
 }
 
+/// The MCP server command and the configuration of each AI client.
+#[tauri::command]
+fn ai_setup() -> AppResult<ai_setup::AiSetup> {
+    ai_setup::setup()
+}
+
+/// Adds LowQuery to an AI client's configuration file; returns its path.
+#[tauri::command]
+fn ai_connect_client(id: String) -> AppResult<String> {
+    ai_setup::connect_client(&id)
+}
+
+/// What AI agents did, newest first.
+#[tauri::command]
+fn ai_activity(limit: Option<usize>) -> AppResult<Vec<mcp::audit::AuditEntry>> {
+    mcp::audit::read_recent(&mcp::config_dir(), limit.unwrap_or(200).min(2000))
+}
+
+#[tauri::command]
+fn ai_activity_clear() -> AppResult<()> {
+    mcp::audit::clear(&mcp::config_dir())
+}
+
 /// Connection files of other database tools found on this machine.
 #[tauri::command]
 async fn import_detect() -> AppResult<Vec<import::ImportSource>> {
@@ -336,6 +361,10 @@ pub fn run() {
             import_detect,
             import_preview,
             import_apply,
+            ai_setup,
+            ai_connect_client,
+            ai_activity,
+            ai_activity_clear,
             updates::update_policy,
         ])
         .run(tauri::generate_context!())

@@ -22,6 +22,7 @@
 	import { ENGINES, engineInfo, type Engine } from "../engines";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer } from "../state/explorer.svelte";
+	import { ai } from "../state/ai.svelte";
 
 	let form = $state<ConnectionProfile | null>(null);
 	/** "pick": choose the database; "form": connection details. */
@@ -116,6 +117,12 @@
 		{ value: "sysrac", label: "SYSRAC" },
 		{ value: "sysasm", label: "SYSASM" },
 	];
+	const aiItems = [
+		{ value: "off", label: "Off" },
+		{ value: "read", label: "Read only" },
+		{ value: "write", label: "Read and write" },
+	];
+
 	// Identification colors; red for production, by convention.
 	const colorItems = [
 		{ value: "", label: "No color", color: "transparent" },
@@ -129,7 +136,7 @@
 	/** Picks the database and moves to its connection form with its defaults. */
 	function choose(engine: Engine) {
 		if (!form) return;
-		const keep = { name: form.name, color: form.color, savePassword: form.savePassword };
+		const keep = { name: form.name, color: form.color, savePassword: form.savePassword, aiAccess: form.aiAccess };
 		form = { ...emptyProfile(engine), ...keep };
 		step = "form";
 		status = null;
@@ -470,6 +477,25 @@
 					</FormSection>
 				{/if}
 
+				<FormSection title="AI agents">
+					<div class="lq-conn-form__wide">
+						<SegmentedControl aria-label="AI access" size="sm" items={aiItems} bind:value={form.aiAccess} />
+					</div>
+					<p class="lq-conn-form__wide lq-conn-form__note">
+						{#if form.aiAccess === "off"}
+							Agents connected to LowQuery (Claude, Cursor, VS Code…) do not see this connection.
+						{:else if form.aiAccess === "read"}
+							Agents can read schemas and run queries. Their sessions are read-only and every call is rolled back.
+						{:else}
+							Agents can also change data and schema, as this database user. Every call is logged in AI activity.
+						{/if}
+						{#if form.aiAccess !== "off" && needsCredentials && !form.savePassword}
+							Save the password so agents can connect.
+						{/if}
+						<button type="button" class="lq-conn-form__link" onclick={() => ai.show("setup")}>Set up AI clients</button>
+					</p>
+				</FormSection>
+
 				{#if status}
 					<Alert severity={status.ok ? "success" : "error"}>{status.text}</Alert>
 				{/if}
@@ -579,6 +605,16 @@
 		grid-template-columns: minmax(0, 1fr) auto auto;
 		align-items: end;
 		gap: var(--ca-space-2);
+	}
+	.lq-conn-form__link {
+		margin-left: var(--ca-space-1);
+		padding: 0;
+		border: 0;
+		background: none;
+		color: var(--ca-text-link, var(--ca-brand-main));
+		font: inherit;
+		text-decoration: underline;
+		cursor: pointer;
 	}
 	.lq-conn-form__note {
 		margin: 0;

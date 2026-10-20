@@ -4,6 +4,14 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-20
+
+### Added
+- MCP server for AI agents: `lowquery mcp` speaks the Model Context Protocol over stdio (revisions 2024-11-05 to 2025-11-25), without a window and without the app running. Tools: `list_connections`, `list_schemas`, `list_tables`, `describe_table` (columns, primary key and foreign keys both ways), `search_objects` (tables, views and columns by name across schemas), `query`, `explain` and `execute`, with structured output, row and size limits, and a 30-second time limit that cancels the statement on the server.
+- **AI agents** access per connection: Off (default), Read only or Read and write. Read-only is enforced by a one-statement check, a read classifier, and a read-only session in the database itself (read-only transactions, `PRAGMA query_only` and a read-only file for SQLite, a read command allowlist for Redis), and every read call is rolled back.
+- **AI agents** dialog in the sidebar: adds LowQuery to Claude Desktop, Cursor, VS Code, Windsurf and Gemini CLI in one click (keeping a backup of their configuration), shows the commands for Claude Code and Codex, and lists every call agents made in **Activity**, refused ones included.
+- [docs/AI.md](docs/AI.md): setup, tools and the safety model.
+
 ## [0.3.2] - 2026-10-20
 
 ### Added
@@ -91,7 +99,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/LowBloat/LowQuery/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/LowBloat/LowQuery/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...v0.3.0
