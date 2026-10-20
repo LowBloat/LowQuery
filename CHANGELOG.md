@@ -4,6 +4,8 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
 ### Added
 - Edit query results in the grid: change cells, set NULL, add, duplicate and delete rows, then **Save** (Ctrl+S) or **Discard**. Pending changes are highlighted, new rows show `DEFAULT` for the columns left empty, and deleted rows are struck through. Saving writes all changes in one transaction with autocommit on, or inside the open transaction otherwise, and the result refreshes in place.
 - A result is editable when it comes from one table and includes its primary key (or a unique key with NOT NULL columns). The table and key come from the database's own result metadata, and a **Read-only** chip explains why a result cannot be edited. Computed columns stay read-only.
@@ -11,6 +13,10 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ### Changed
 - The value viewer edits long and multi-line values when the result is editable.
+
+### Fixed
+- Oracle `TIMESTAMP WITH TIME ZONE` values showed the UTC time next to the original offset; they now show the local time of that offset.
+- Oracle `RAW` columns appeared as `RAW(0)` in the sidebar.
 
 ## [0.2.1] - 2026-10-19
 
@@ -65,7 +71,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/LowBloat/LowQuery/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/LowBloat/LowQuery/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/LowBloat/LowQuery/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/LowBloat/LowQuery/compare/v0.1.1...v0.1.2
