@@ -113,7 +113,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | Database | Source |
 | --- | --- |
 | PostgreSQL | Tables built from `pg_attribute`, `pg_constraint` (`pg_get_constraintdef`), `pg_index` (`pg_get_indexdef`), triggers and comments; foreign keys follow as `ALTER TABLE`. Views, functions and sequences from `pg_get_viewdef`, `pg_get_functiondef` and `pg_sequence` |
-| Oracle | `DBMS_METADATA.GET_DDL`, plus the table's own indexes, triggers and comments |
+| Oracle | `DBMS_METADATA.GET_DDL`, plus the table's own indexes, triggers and comments; functions, procedures, packages and types from `ALL_SOURCE` (spec and body) |
 | MySQL, MariaDB | `SHOW CREATE TABLE/VIEW/FUNCTION/PROCEDURE/SEQUENCE`, triggers with `SHOW CREATE TRIGGER`, routines between `DELIMITER` lines |
 | SQL Server | `OBJECT_DEFINITION` for views, routines and triggers; tables, sequences, synonyms and alias types scripted from `sys.*` views; batches separated by `GO` |
 | SQLite | The statements kept in `sqlite_schema` for the table, its indexes and triggers |

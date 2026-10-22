@@ -413,7 +413,7 @@ impl OraSession {
     }
 
     /// DDL from `DBMS_METADATA`, with a table's indexes (other than those
-    /// behind its keys), triggers and comments.
+    /// behind its keys), triggers and comments; PL/SQL units from their source.
     pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
         let object_type = match kind {
             "table" => "TABLE",
@@ -432,6 +432,36 @@ impl OraSession {
             }
         };
         let _busy = self.busy.lock().await;
+        if matches!(kind, "function" | "procedure" | "package" | "type") {
+            // PL/SQL units come from their stored source, as SQL Developer
+            // shows them; DBMS_METADATA fails to fetch them on 23ai
+            // (ORA-01002).
+            let params = [
+                schema.to_string(),
+                name.to_string(),
+                object_type.to_string(),
+            ];
+            return self
+                .with_conn(move |conn| {
+                    let mut out = String::new();
+                    for unit in [params[2].clone(), format!("{} BODY", params[2])] {
+                        let lines = first_texts(
+                            conn,
+                            "select text from all_source
+                             where owner = :1 and name = :2 and type = :3
+                             order by line",
+                            &[params[0].clone(), params[1].clone(), unit],
+                        )?;
+                        if lines.is_empty() {
+                            continue;
+                        }
+                        let source = lines.concat();
+                        out.push_str(&format!("CREATE OR REPLACE {}\n/\n\n", source.trim_end()));
+                    }
+                    Ok(out)
+                })
+                .await;
+        }
         let params = vec![
             object_type.to_string(),
             name.to_string(),
