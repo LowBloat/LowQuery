@@ -6,6 +6,10 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [0.5.0] - 2026-10-22
 
+### Security
+- TLS: `rustls-webpki` 0.103.16 and `webpki-roots` 1.0.10 no longer trust distrusted intermediates and emSign roots (RUSTSEC-2026-0381, RUSTSEC-2026-0382).
+- The `zip` advisories RUSTSEC-2026-0367/0368/0369 are acknowledged in `deny.toml`: `zip` is used only by the updater, which extracts Windows update packages after checking their signature against LowQuery's update key.
+
 ### Added
 - Result grid filters ([#4](https://github.com/LowBloat/LowQuery/issues/4)):
   - A filter button in each column header (shown on hover, highlighted while the column is filtered): *contains* (any case), *equals*, *not equal to* (keeps NULLs), *is NULL*, *is not NULL*.
