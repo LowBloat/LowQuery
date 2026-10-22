@@ -6,6 +6,9 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [0.5.1] - 2026-10-22
 
+### Security
+- `tokio` 1.54.1 fixes a race condition in `tokio::time::Interval` (RUSTSEC-2026-0384).
+
 ### Added
 - Context menus in the connection tree ([#8](https://github.com/LowBloat/LowQuery/issues/8)): right-click a node, press the context-menu key, or use the ⋯ button that shows on hover.
   - **Connection:** new query, connect, refresh, disconnect; create a schema (a user in Oracle) or a database; server sessions (`pg_stat_activity`, `SHOW PROCESSLIST`, `v$session`, `sys.dm_exec_sessions`, `CLIENT LIST`); show a SQLite file in its folder; edit, duplicate, copy connection details and delete the profile.
