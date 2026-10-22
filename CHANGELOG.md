@@ -4,6 +4,8 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-22
+
 ### Added
 - Result grid filters ([#4](https://github.com/LowBloat/LowQuery/issues/4)):
   - A filter button in each column header (shown on hover, highlighted while the column is filtered): *contains* (any case), *equals*, *not equal to* (keeps NULLs), *is NULL*, *is not NULL*.
@@ -110,7 +112,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/LowBloat/LowQuery/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/LowBloat/LowQuery/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/LowBloat/LowQuery/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/LowBloat/LowQuery/compare/v0.3.0...v0.3.1
