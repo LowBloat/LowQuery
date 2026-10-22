@@ -553,13 +553,15 @@ impl MySession {
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
         let rows = self
             .query_rows(
-                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY
+                "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY,
+                        COLUMN_DEFAULT IS NULL, COLUMN_DEFAULT, EXTRA
                  FROM information_schema.COLUMNS
                  WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
                  ORDER BY ORDINAL_POSITION",
                 vec![schema.to_string(), table.to_string()],
             )
             .await?;
+        let mariadb = self.engine == Engine::Mariadb;
         Ok(rows
             .into_iter()
             .map(|r| DbColumn {
@@ -567,8 +569,75 @@ impl MySession {
                 type_name: r[1].clone(),
                 nullable: r[2] == "YES",
                 primary_key: r[3] == "PRI",
+                default_value: (r[4] == "0")
+                    .then(|| default_expr(&r[5], &r[6], mariadb))
+                    .flatten(),
             })
             .collect())
+    }
+
+    /// `SHOW CREATE` output, with routines and triggers between `DELIMITER`
+    /// lines so the script runs as written.
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        let target = format!("{}.{}", quote_ident(schema), quote_ident(name));
+        let (what, column) = match kind {
+            "table" => ("TABLE", 1),
+            "view" => ("VIEW", 1),
+            "sequence" => ("SEQUENCE", 1),
+            "function" => ("FUNCTION", 2),
+            "procedure" => ("PROCEDURE", 2),
+            _ => {
+                return Err(AppError::invalid(format!(
+                    "LowQuery cannot script a {kind} on this server."
+                )))
+            }
+        };
+        let def = self
+            .show_create(&format!("SHOW CREATE {what} {target}"), column)
+            .await?;
+        if def.trim().is_empty() {
+            return Ok(def);
+        }
+        let mut out = if matches!(kind, "function" | "procedure") {
+            format!("DELIMITER $$\n{def}$$\nDELIMITER ;\n")
+        } else {
+            format!("{def};\n")
+        };
+        if kind == "table" {
+            let triggers = self
+                .query_rows(
+                    "SELECT TRIGGER_NAME FROM information_schema.TRIGGERS
+                     WHERE EVENT_OBJECT_SCHEMA = ? AND EVENT_OBJECT_TABLE = ?
+                     ORDER BY ACTION_ORDER, TRIGGER_NAME",
+                    vec![schema.to_string(), name.to_string()],
+                )
+                .await?;
+            if !triggers.is_empty() {
+                out.push_str("\nDELIMITER $$\n");
+                for t in triggers {
+                    let sql = format!(
+                        "SHOW CREATE TRIGGER {}.{}",
+                        quote_ident(schema),
+                        quote_ident(&t[0])
+                    );
+                    out.push_str(&format!("{}$$\n", self.show_create(&sql, 2).await?));
+                }
+                out.push_str("DELIMITER ;\n");
+            }
+        }
+        Ok(out)
+    }
+
+    /// One column of a `SHOW CREATE ...` row (text protocol: not every
+    /// server prepares SHOW statements).
+    async fn show_create(&self, sql: &str, column: usize) -> AppResult<String> {
+        let mut conn = self.conn.lock().await;
+        let rows: Vec<mysql_async::Row> = conn.query(sql).await.map_err(map_error)?;
+        Ok(texts(rows)
+            .into_iter()
+            .next()
+            .and_then(|r| r.into_iter().nth(column).flatten())
+            .unwrap_or_default())
     }
 
     /// Metadata query through a prepared statement, every value as text.
@@ -580,6 +649,33 @@ impl MySession {
             .map(|row| row.unwrap().into_iter().map(plain_text).collect())
             .collect())
     }
+}
+
+/// `COLUMN_DEFAULT` as an SQL expression. MariaDB already writes literals
+/// quoted (and a NULL default as `NULL`); MySQL writes the bare value and marks
+/// expressions with `DEFAULT_GENERATED`.
+fn default_expr(value: &str, extra: &str, mariadb: bool) -> Option<String> {
+    if mariadb {
+        return (!value.eq_ignore_ascii_case("NULL")).then(|| value.to_string());
+    }
+    if extra.to_ascii_uppercase().contains("DEFAULT_GENERATED") {
+        let lower = value.to_ascii_lowercase();
+        let bare = ["current_timestamp", "now(", "localtime", "current_date"]
+            .iter()
+            .any(|p| lower.starts_with(p));
+        return Some(if bare {
+            value.to_string()
+        } else {
+            format!("({value})")
+        });
+    }
+    if value.starts_with("b'") {
+        return Some(value.to_string());
+    }
+    Some(format!(
+        "'{}'",
+        value.replace('\\', "\\\\").replace('\'', "''")
+    ))
 }
 
 fn is_system_schema(name: &str) -> bool {
@@ -2737,5 +2833,17 @@ mod tests {
             .await
             .expect("connect");
         crate::drivers::view_fixtures::check(&s, "mysql").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ddl_sql() {
+        let Some((profile, password)) = profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, password.as_deref())
+            .await
+            .expect("connect");
+        crate::drivers::ddl_fixtures::check(&s, "mysql", &profile.database).await;
     }
 }

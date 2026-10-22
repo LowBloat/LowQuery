@@ -224,6 +224,21 @@ async fn list_columns(
         .await
 }
 
+/// The statements that create a table, view, routine or other object.
+#[tauri::command]
+async fn object_ddl(
+    state: State<'_, AppState>,
+    session_id: String,
+    schema: String,
+    name: String,
+    kind: String,
+) -> AppResult<String> {
+    state
+        .session(&session_id)?
+        .object_ddl(&schema, &name, &kind)
+        .await
+}
+
 /// Every `tnsnames.ora` found on this machine (TNS_ADMIN, ORACLE_HOME,
 /// registered Oracle homes, clients on PATH).
 #[tauri::command]
@@ -355,6 +370,7 @@ pub fn run() {
             list_schemas,
             list_objects,
             list_columns,
+            object_ddl,
             write_text_file,
             oracle_tns_sources,
             oracle_tns_folder,

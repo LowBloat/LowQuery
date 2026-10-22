@@ -502,3 +502,28 @@ async fn oracle_result_view_sql() {
         .expect("connection");
     super::view_fixtures::check(&s, "oracle").await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn postgres_ddl_sql() {
+    let Some((profile, pw)) = pg_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    super::ddl_fixtures::check(&s, "postgres", "public").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn oracle_ddl_sql() {
+    let Some((profile, pw)) = ora_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    let schema = profile.user.to_uppercase();
+    super::ddl_fixtures::check(&s, "oracle", &schema).await;
+}

@@ -227,7 +227,7 @@ impl LiteSession {
         // hidden columns of virtual tables.
         let rows = self
             .query_rows(
-                "SELECT name, type, \"notnull\", pk FROM pragma_table_xinfo(?1, ?2)
+                "SELECT name, type, \"notnull\", pk, dflt_value FROM pragma_table_xinfo(?1, ?2)
                  WHERE hidden <> 1 ORDER BY cid"
                     .into(),
                 vec![table.to_string(), schema.to_string()],
@@ -240,8 +240,34 @@ impl LiteSession {
                 type_name: r[1].clone(),
                 nullable: r[2] == "0",
                 primary_key: r[3] != "0",
+                default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
             })
             .collect())
+    }
+
+    /// The statements SQLite keeps for the table or view, then its indexes
+    /// and triggers.
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        if !matches!(kind, "table" | "view") {
+            return Err(AppError::invalid(format!(
+                "LowQuery cannot script a {kind} on SQLite."
+            )));
+        }
+        let sql = format!(
+            "SELECT sql FROM {}.sqlite_schema
+             WHERE sql IS NOT NULL
+               AND ((type IN ('table', 'view') AND name = ?1)
+                    OR (type IN ('index', 'trigger') AND tbl_name = ?1))
+             ORDER BY CASE type WHEN 'table' THEN 0 WHEN 'view' THEN 0 WHEN 'index' THEN 1 ELSE 2 END,
+                      name",
+            quote_ident(schema)
+        );
+        let rows = self.query_rows(sql, vec![name.to_string()]).await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| format!("{};\n", r[0].trim_end().trim_end_matches(';')))
+            .collect::<Vec<_>>()
+            .join("\n"))
     }
 
     async fn query_rows(&self, sql: String, params: Vec<String>) -> AppResult<Vec<Vec<String>>> {
@@ -2650,6 +2676,17 @@ mod tests {
             .await
             .unwrap();
         crate::drivers::view_fixtures::check(&s, "sqlite").await;
+        drop(s);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn ddl_sql() {
+        let path = temp_path("ddl");
+        let s = crate::drivers::Session::open(&profile(&path, true), None)
+            .await
+            .unwrap();
+        crate::drivers::ddl_fixtures::check(&s, "sqlite", "main").await;
         drop(s);
         let _ = std::fs::remove_file(&path);
     }

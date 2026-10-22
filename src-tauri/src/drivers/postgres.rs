@@ -545,11 +545,13 @@ impl PgSession {
             .query(
                 "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod),
                         NOT a.attnotnull,
-                        COALESCE(a.attnum = ANY(i.indkey::int2[]), false)
+                        COALESCE(a.attnum = ANY(i.indkey::int2[]), false),
+                        pg_get_expr(d.adbin, d.adrelid)
                  FROM pg_attribute a
                  JOIN pg_class c ON c.oid = a.attrelid
                  JOIN pg_namespace n ON n.oid = c.relnamespace
                  LEFT JOIN pg_index i ON i.indrelid = c.oid AND i.indisprimary
+                 LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
                  WHERE n.nspname = $1 AND c.relname = $2 AND a.attnum > 0 AND NOT a.attisdropped
                  ORDER BY a.attnum",
                 &[&schema, &table],
@@ -563,9 +565,258 @@ impl PgSession {
                 type_name: r.get(1),
                 nullable: r.get(2),
                 primary_key: r.get(3),
+                default_value: r.get(4),
             })
             .collect())
     }
+
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        let client = self.client.lock().await;
+        let client = &*client;
+
+        if matches!(kind, "function" | "procedure") {
+            let rows = text_rows(
+                client,
+                "SELECT pg_get_functiondef(p.oid)
+                 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+                 WHERE n.nspname = $1
+                   AND p.proname || '(' || pg_get_function_identity_arguments(p.oid) || ')' = $2",
+                &[schema, name],
+            )
+            .await?;
+            let def = rows.first().map(|r| cell_text(r, 0)).unwrap_or_default();
+            return Ok(if def.trim().is_empty() {
+                def
+            } else {
+                format!("{};\n", def.trim_end())
+            });
+        }
+
+        let rel = text_rows(
+            client,
+            "SELECT c.oid::text, c.relkind::text, c.relpersistence::text,
+                    quote_ident(n.nspname) || '.' || quote_ident(c.relname)
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relname = $2",
+            &[schema, name],
+        )
+        .await?;
+        let Some(rel) = rel.first() else {
+            return Err(AppError::not_found(format!(
+                "{schema}.{name} was not found."
+            )));
+        };
+        let oid = cell_text(rel, 0);
+        let relkind = cell_text(rel, 1);
+        let target = cell_text(rel, 3);
+        let mut out = match relkind.as_str() {
+            "v" | "m" => {
+                let def = text_rows(
+                    client,
+                    "SELECT pg_get_viewdef($1::text::oid, true)",
+                    &[&oid],
+                )
+                .await?;
+                let body = def.first().map(|r| cell_text(r, 0)).unwrap_or_default();
+                let body = body.trim().trim_end_matches(';');
+                if relkind == "v" {
+                    format!("CREATE OR REPLACE VIEW {target} AS\n{body};\n")
+                } else {
+                    format!("CREATE MATERIALIZED VIEW {target} AS\n{body}\nWITH DATA;\n")
+                }
+            }
+            "S" => pg_sequence_ddl(client, &oid, &target).await?,
+            "r" | "p" | "f" => {
+                pg_table_ddl(client, &oid, &relkind, &cell_text(rel, 2), &target).await?
+            }
+            other => {
+                return Err(AppError::invalid(format!(
+                    "LowQuery cannot script this kind of relation ({other})."
+                )));
+            }
+        };
+
+        // Indexes not behind a constraint, triggers and comments.
+        let extra = text_rows(
+            client,
+            "SELECT * FROM (
+               SELECT pg_get_indexdef(i.indexrelid) || ';' FROM pg_index i
+               WHERE i.indrelid = $1::text::oid
+                 AND NOT EXISTS (SELECT 1 FROM pg_constraint c
+                                 WHERE c.conindid = i.indexrelid AND c.conrelid = i.indrelid)
+               ORDER BY 1) ix
+             UNION ALL
+             SELECT * FROM (
+               SELECT pg_get_triggerdef(t.oid, true) || ';' FROM pg_trigger t
+               WHERE t.tgrelid = $1::text::oid AND NOT t.tgisinternal ORDER BY t.tgname) tr
+             UNION ALL
+             SELECT 'COMMENT ON ' || CASE c.relkind WHEN 'v' THEN 'VIEW'
+                                      WHEN 'm' THEN 'MATERIALIZED VIEW' WHEN 'S' THEN 'SEQUENCE'
+                                      WHEN 'f' THEN 'FOREIGN TABLE' ELSE 'TABLE' END
+                    || ' ' || $2::text || ' IS ' || quote_literal(d.description) || ';'
+             FROM pg_description d JOIN pg_class c ON c.oid = d.objoid
+             WHERE d.objoid = $1::text::oid AND d.classoid = 'pg_class'::regclass
+               AND d.objsubid = 0
+             UNION ALL
+             SELECT * FROM (
+               SELECT 'COMMENT ON COLUMN ' || $2::text || '.' || quote_ident(a.attname)
+                      || ' IS ' || quote_literal(d.description) || ';'
+               FROM pg_description d
+               JOIN pg_attribute a ON a.attrelid = d.objoid AND a.attnum = d.objsubid
+               WHERE d.objoid = $1::text::oid AND d.classoid = 'pg_class'::regclass
+                 AND d.objsubid > 0
+               ORDER BY d.objsubid) cm",
+            &[&oid, &target],
+        )
+        .await?;
+        for row in extra {
+            out.push_str(&format!("\n{}\n", cell_text(&row, 0)));
+        }
+        Ok(out)
+    }
+}
+
+/// Catalog query whose columns are all text.
+async fn text_rows(
+    client: &Client,
+    sql: &str,
+    params: &[&str],
+) -> AppResult<Vec<Vec<Option<String>>>> {
+    let params: Vec<&(dyn ToSql + Sync)> =
+        params.iter().map(|p| p as &(dyn ToSql + Sync)).collect();
+    let rows = client.query(sql, &params).await.map_err(map_error)?;
+    Ok(rows
+        .iter()
+        .map(|r| (0..r.len()).map(|i| r.get(i)).collect())
+        .collect())
+}
+
+fn cell_text(row: &[Option<String>], i: usize) -> String {
+    row.get(i).cloned().flatten().unwrap_or_default()
+}
+
+async fn pg_sequence_ddl(client: &Client, oid: &str, target: &str) -> AppResult<String> {
+    let rows = text_rows(
+        client,
+        "SELECT format_type(s.seqtypid, NULL), s.seqincrement::text, s.seqmin::text,
+                s.seqmax::text, s.seqstart::text, s.seqcache::text, s.seqcycle::text
+         FROM pg_sequence s WHERE s.seqrelid = $1::text::oid",
+        &[oid],
+    )
+    .await?;
+    let Some(q) = rows.first() else {
+        return Ok(String::new());
+    };
+    Ok(format!(
+        "CREATE SEQUENCE {target}\n    AS {}\n    INCREMENT BY {}\n    MINVALUE {}\n    MAXVALUE {}\n    START WITH {}\n    CACHE {}\n    {}CYCLE;\n",
+        cell_text(q, 0),
+        cell_text(q, 1),
+        cell_text(q, 2),
+        cell_text(q, 3),
+        cell_text(q, 4),
+        cell_text(q, 5),
+        if cell_text(q, 6) == "true" { "" } else { "NO " }
+    ))
+}
+
+/// CREATE TABLE with columns, defaults, identity and generated columns, and
+/// the primary key, unique, check and exclusion constraints; foreign keys
+/// follow as ALTER TABLE so tables can be created in any order.
+async fn pg_table_ddl(
+    client: &Client,
+    oid: &str,
+    relkind: &str,
+    persistence: &str,
+    target: &str,
+) -> AppResult<String> {
+    // attidentity (10+) and attgenerated (12+) are read through to_jsonb so
+    // older servers leave them empty instead of failing.
+    let columns = text_rows(
+        client,
+        "SELECT quote_ident(a.attname), format_type(a.atttypid, a.atttypmod),
+                a.attnotnull::text, pg_get_expr(d.adbin, d.adrelid),
+                to_jsonb(a) ->> 'attidentity', to_jsonb(a) ->> 'attgenerated'
+         FROM pg_attribute a
+         LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum
+         WHERE a.attrelid = $1::text::oid AND a.attnum > 0 AND NOT a.attisdropped
+         ORDER BY a.attnum",
+        &[oid],
+    )
+    .await?;
+    let constraints = text_rows(
+        client,
+        "SELECT quote_ident(conname), pg_get_constraintdef(oid, true), contype::text
+         FROM pg_constraint
+         WHERE conrelid = $1::text::oid AND contype IN ('p', 'u', 'c', 'x', 'f') AND conislocal
+         ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'c' THEN 2
+                               WHEN 'x' THEN 3 ELSE 4 END, conname",
+        &[oid],
+    )
+    .await?;
+    let mut lines: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let mut line = format!("    {} {}", cell_text(c, 0), cell_text(c, 1));
+            let default = cell_text(c, 3);
+            match (cell_text(c, 4).as_str(), cell_text(c, 5).as_str()) {
+                ("a", _) => line.push_str(" GENERATED ALWAYS AS IDENTITY"),
+                ("d", _) => line.push_str(" GENERATED BY DEFAULT AS IDENTITY"),
+                (_, "s") => line.push_str(&format!(" GENERATED ALWAYS AS ({default}) STORED")),
+                (_, "v") => line.push_str(&format!(" GENERATED ALWAYS AS ({default}) VIRTUAL")),
+                _ if !default.is_empty() => line.push_str(&format!(" DEFAULT {default}")),
+                _ => {}
+            }
+            if cell_text(c, 2) == "true" {
+                line.push_str(" NOT NULL");
+            }
+            line
+        })
+        .collect();
+    let mut foreign_keys = Vec::new();
+    for c in &constraints {
+        let def = format!("CONSTRAINT {} {}", cell_text(c, 0), cell_text(c, 1));
+        if cell_text(c, 2) == "f" {
+            foreign_keys.push(format!("ALTER TABLE {target} ADD {def};"));
+        } else {
+            lines.push(format!("    {def}"));
+        }
+    }
+    let head = match (relkind, persistence) {
+        ("f", _) => "CREATE FOREIGN TABLE",
+        (_, "u") => "CREATE UNLOGGED TABLE",
+        _ => "CREATE TABLE",
+    };
+    let mut out = format!("{head} {target} (\n{}\n)", lines.join(",\n"));
+    if relkind == "p" {
+        let key = text_rows(client, "SELECT pg_get_partkeydef($1::text::oid)", &[oid]).await?;
+        let key = key.first().map(|r| cell_text(r, 0)).unwrap_or_default();
+        out.push_str(&format!("\nPARTITION BY {key}"));
+    }
+    if relkind == "f" {
+        let server = text_rows(
+            client,
+            "SELECT quote_ident(s.srvname),
+                    (SELECT string_agg(quote_ident(split_part(o, '=', 1)) || ' '
+                            || quote_literal(substr(o, strpos(o, '=') + 1)), ', ')
+                     FROM unnest(ft.ftoptions) o)
+             FROM pg_foreign_table ft JOIN pg_foreign_server s ON s.oid = ft.ftserver
+             WHERE ft.ftrelid = $1::text::oid",
+            &[oid],
+        )
+        .await?;
+        if let Some(sv) = server.first() {
+            out.push_str(&format!("\nSERVER {}", cell_text(sv, 0)));
+            let options = cell_text(sv, 1);
+            if !options.is_empty() {
+                out.push_str(&format!("\nOPTIONS ({options})"));
+            }
+        }
+    }
+    out.push_str(";\n");
+    for fk in foreign_keys {
+        out.push_str(&format!("\n{fk}\n"));
+    }
+    Ok(out)
 }
 
 async fn fetch_rows(

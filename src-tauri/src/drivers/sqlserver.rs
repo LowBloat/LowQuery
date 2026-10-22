@@ -758,33 +758,21 @@ impl MsSession {
     }
 
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
-        let (schema, table) = (nstr(schema), nstr(table));
+        let object = object_id(schema, table);
         let rows = self
             .metadata(format!(
-                "SELECT c.name,
-                        CASE WHEN t.is_user_defined = 1 THEN t.name
-                             WHEN t.name IN ('varchar', 'char', 'varbinary', 'binary')
-                               THEN t.name + '(' + CASE WHEN c.max_length = -1 THEN 'max'
-                                    ELSE CAST(c.max_length AS varchar(10)) END + ')'
-                             WHEN t.name IN ('nvarchar', 'nchar')
-                               THEN t.name + '(' + CASE WHEN c.max_length = -1 THEN 'max'
-                                    ELSE CAST(c.max_length / 2 AS varchar(10)) END + ')'
-                             WHEN t.name IN ('decimal', 'numeric')
-                               THEN t.name + '(' + CAST(c.precision AS varchar(10)) + ','
-                                    + CAST(c.scale AS varchar(10)) + ')'
-                             WHEN t.name IN ('datetime2', 'time', 'datetimeoffset')
-                               THEN t.name + '(' + CAST(c.scale AS varchar(10)) + ')'
-                             ELSE t.name END,
+                "SELECT c.name, {COLUMN_TYPE},
                         c.is_nullable,
                         CAST(CASE WHEN EXISTS (
                           SELECT 1 FROM sys.indexes i
                           JOIN sys.index_columns ic ON ic.object_id = i.object_id
                            AND ic.index_id = i.index_id
                           WHERE i.object_id = c.object_id AND i.is_primary_key = 1
-                            AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS bit)
+                            AND ic.column_id = c.column_id) THEN 1 ELSE 0 END AS bit),
+                        OBJECT_DEFINITION(c.default_object_id)
                  FROM sys.all_columns c
                  JOIN sys.types t ON t.user_type_id = c.user_type_id
-                 WHERE c.object_id = OBJECT_ID(QUOTENAME({schema}) + N'.' + QUOTENAME({table}))
+                 WHERE c.object_id = {object}
                  ORDER BY c.column_id"
             ))
             .await?;
@@ -797,9 +785,312 @@ impl MsSession {
                     type_name: text(1),
                     nullable: text(2) == "true",
                     primary_key: text(3) == "true",
+                    default_value: r.get(4).cloned().flatten(),
                 }
             })
             .collect())
+    }
+
+    /// Views, routines and triggers come from `OBJECT_DEFINITION`; tables,
+    /// sequences, synonyms and alias types are scripted from the catalog.
+    /// Batches are separated by `GO`.
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        let object = object_id(schema, name);
+        let target = format!("{}.{}", quote_ident(schema), quote_ident(name));
+        let text = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        match kind {
+            "view" | "function" | "procedure" => {
+                let rows = self
+                    .metadata(format!("SELECT OBJECT_DEFINITION({object})"))
+                    .await?;
+                let def = rows.first().map(|r| text(r, 0)).unwrap_or_default();
+                Ok(if def.trim().is_empty() {
+                    def
+                } else {
+                    format!("{}\nGO\n", def.trim())
+                })
+            }
+            "table" => self.table_ddl(&object, &target).await,
+            "sequence" => {
+                let rows = self
+                    .metadata(format!(
+                        "SELECT TYPE_NAME(s.user_type_id), CAST(s.start_value AS nvarchar(60)),
+                                CAST(s.increment AS nvarchar(60)), CAST(s.minimum_value AS nvarchar(60)),
+                                CAST(s.maximum_value AS nvarchar(60)), s.is_cycling, s.is_cached,
+                                CAST(s.cache_size AS nvarchar(20))
+                         FROM sys.sequences s WHERE s.object_id = {object}"
+                    ))
+                    .await?;
+                let Some(q) = rows.first() else {
+                    return Ok(String::new());
+                };
+                let cache = match (text(q, 6).as_str(), text(q, 7)) {
+                    ("false", _) => "NO CACHE".to_string(),
+                    (_, size) if !size.is_empty() => format!("CACHE {size}"),
+                    _ => "CACHE".to_string(),
+                };
+                Ok(format!(
+                    "CREATE SEQUENCE {target}\n    AS {}\n    START WITH {}\n    INCREMENT BY {}\n    MINVALUE {}\n    MAXVALUE {}\n    {}CYCLE\n    {cache};\n",
+                    text(q, 0),
+                    text(q, 1),
+                    text(q, 2),
+                    text(q, 3),
+                    text(q, 4),
+                    if text(q, 5) == "true" { "" } else { "NO " },
+                ))
+            }
+            "synonym" => {
+                let rows = self
+                    .metadata(format!(
+                        "SELECT base_object_name FROM sys.synonyms WHERE object_id = {object}"
+                    ))
+                    .await?;
+                let base = rows.first().map(|r| text(r, 0)).unwrap_or_default();
+                Ok(format!("CREATE SYNONYM {target} FOR {base};\n"))
+            }
+            "type" => {
+                let rows = self
+                    .metadata(format!(
+                        "SELECT b.name, CAST(t.max_length AS int), CAST(t.precision AS int),
+                                CAST(t.scale AS int), t.is_nullable, t.is_table_type
+                         FROM sys.types t
+                         LEFT JOIN sys.types b ON b.user_type_id = t.system_type_id
+                         WHERE t.schema_id = SCHEMA_ID({}) AND t.name = {}",
+                        nstr(schema),
+                        nstr(name)
+                    ))
+                    .await?;
+                let Some(q) = rows.first() else {
+                    return Ok(String::new());
+                };
+                if text(q, 5) == "true" {
+                    return Err(AppError::invalid("LowQuery cannot script table types yet."));
+                }
+                let num = |i: usize| text(q, i).parse::<i64>().unwrap_or(0);
+                let base = text(q, 0);
+                let ty = match base.as_str() {
+                    "varchar" | "char" | "varbinary" | "binary" if num(1) == -1 => {
+                        format!("{base}(max)")
+                    }
+                    "varchar" | "char" | "varbinary" | "binary" => format!("{base}({})", num(1)),
+                    "nvarchar" | "nchar" if num(1) == -1 => format!("{base}(max)"),
+                    "nvarchar" | "nchar" => format!("{base}({})", num(1) / 2),
+                    "decimal" | "numeric" => format!("{base}({},{})", num(2), num(3)),
+                    "datetime2" | "time" | "datetimeoffset" => format!("{base}({})", num(3)),
+                    _ => base,
+                };
+                let null = if text(q, 4) == "true" {
+                    "NULL"
+                } else {
+                    "NOT NULL"
+                };
+                Ok(format!("CREATE TYPE {target} FROM {ty} {null};\n"))
+            }
+            _ => Err(AppError::invalid(format!(
+                "LowQuery cannot script a {kind} on SQL Server."
+            ))),
+        }
+    }
+
+    async fn table_ddl(&self, object: &str, target: &str) -> AppResult<String> {
+        let text = |r: &[Option<String>], i: usize| r.get(i).cloned().flatten().unwrap_or_default();
+        let columns = self
+            .metadata(format!(
+                "SELECT c.name, {COLUMN_TYPE}, c.is_nullable, c.is_identity,
+                        CAST(ic.seed_value AS nvarchar(60)), CAST(ic.increment_value AS nvarchar(60)),
+                        cc.definition, cc.is_persisted, dc.name, dc.definition
+                 FROM sys.columns c
+                 JOIN sys.types t ON t.user_type_id = c.user_type_id
+                 LEFT JOIN sys.identity_columns ic
+                   ON ic.object_id = c.object_id AND ic.column_id = c.column_id
+                 LEFT JOIN sys.computed_columns cc
+                   ON cc.object_id = c.object_id AND cc.column_id = c.column_id
+                 LEFT JOIN sys.default_constraints dc
+                   ON dc.parent_object_id = c.object_id AND dc.parent_column_id = c.column_id
+                 WHERE c.object_id = {object}
+                 ORDER BY c.column_id"
+            ))
+            .await?;
+        if columns.is_empty() {
+            return Ok(String::new());
+        }
+        let mut lines: Vec<String> = columns
+            .iter()
+            .map(|c| {
+                let name = quote_ident(&text(c, 0));
+                let computed = text(c, 6);
+                if !computed.is_empty() {
+                    let persisted = if text(c, 7) == "true" {
+                        " PERSISTED"
+                    } else {
+                        ""
+                    };
+                    return format!("    {name} AS {computed}{persisted}");
+                }
+                let mut line = format!("    {name} {}", text(c, 1));
+                if text(c, 3) == "true" {
+                    line.push_str(&format!(" IDENTITY({},{})", text(c, 4), text(c, 5)));
+                }
+                line.push_str(if text(c, 2) == "true" {
+                    " NULL"
+                } else {
+                    " NOT NULL"
+                });
+                if !text(c, 9).is_empty() {
+                    line.push_str(&format!(
+                        " CONSTRAINT {} DEFAULT {}",
+                        quote_ident(&text(c, 8)),
+                        text(c, 9)
+                    ));
+                }
+                line
+            })
+            .collect();
+
+        // Primary key and unique constraints, one row per key column.
+        let keys = self
+            .metadata(format!(
+                "SELECT kc.name, kc.type, i.type_desc, col.name, ic.is_descending_key
+                 FROM sys.key_constraints kc
+                 JOIN sys.indexes i ON i.object_id = kc.parent_object_id AND i.index_id = kc.unique_index_id
+                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                 JOIN sys.columns col ON col.object_id = ic.object_id AND col.column_id = ic.column_id
+                 WHERE kc.parent_object_id = {object}
+                 ORDER BY kc.type, kc.name, ic.key_ordinal"
+            ))
+            .await?;
+        for (name, rows) in group_by_first(&keys) {
+            let kind = if text(rows[0], 1) == "PK" {
+                "PRIMARY KEY"
+            } else {
+                "UNIQUE"
+            };
+            let cols = rows
+                .iter()
+                .map(|r| format!("{}{}", quote_ident(&text(r, 3)), desc(&text(r, 4))))
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(format!(
+                "    CONSTRAINT {} {kind} {} ({cols})",
+                quote_ident(&name),
+                text(rows[0], 2)
+            ));
+        }
+        let checks = self
+            .metadata(format!(
+                "SELECT name, definition FROM sys.check_constraints
+                 WHERE parent_object_id = {object} ORDER BY name"
+            ))
+            .await?;
+        for c in &checks {
+            lines.push(format!(
+                "    CONSTRAINT {} CHECK {}",
+                quote_ident(&text(c, 0)),
+                text(c, 1)
+            ));
+        }
+        let mut out = format!("CREATE TABLE {target} (\n{}\n);\n", lines.join(",\n"));
+
+        let indexes = self
+            .metadata(format!(
+                "SELECT i.name, i.is_unique, i.type_desc, c.name, ic.is_descending_key,
+                        ic.is_included_column, i.filter_definition
+                 FROM sys.indexes i
+                 JOIN sys.index_columns ic ON ic.object_id = i.object_id AND ic.index_id = i.index_id
+                 JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                 WHERE i.object_id = {object} AND i.is_primary_key = 0
+                   AND i.is_unique_constraint = 0 AND i.type IN (1, 2)
+                 ORDER BY i.name, ic.is_included_column, ic.key_ordinal, ic.index_column_id"
+            ))
+            .await?;
+        for (name, rows) in group_by_first(&indexes) {
+            let unique = if text(rows[0], 1) == "true" {
+                "UNIQUE "
+            } else {
+                ""
+            };
+            let key = rows
+                .iter()
+                .filter(|r| text(r, 5) != "true")
+                .map(|r| format!("{}{}", quote_ident(&text(r, 3)), desc(&text(r, 4))))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let include = rows
+                .iter()
+                .filter(|r| text(r, 5) == "true")
+                .map(|r| quote_ident(&text(r, 3)))
+                .collect::<Vec<_>>();
+            out.push_str(&format!(
+                "\nCREATE {unique}{} INDEX {} ON {target} ({key})",
+                text(rows[0], 2),
+                quote_ident(&name)
+            ));
+            if !include.is_empty() {
+                out.push_str(&format!(" INCLUDE ({})", include.join(", ")));
+            }
+            let filter = text(rows[0], 6);
+            if !filter.is_empty() {
+                out.push_str(&format!(" WHERE {filter}"));
+            }
+            out.push_str(";\n");
+        }
+
+        let foreign_keys = self
+            .metadata(format!(
+                "SELECT fk.name, SCHEMA_NAME(rt.schema_id), rt.name, pc.name, rc.name,
+                        fk.delete_referential_action_desc, fk.update_referential_action_desc
+                 FROM sys.foreign_keys fk
+                 JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+                 JOIN sys.objects rt ON rt.object_id = fk.referenced_object_id
+                 JOIN sys.columns pc ON pc.object_id = fkc.parent_object_id
+                  AND pc.column_id = fkc.parent_column_id
+                 JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id
+                  AND rc.column_id = fkc.referenced_column_id
+                 WHERE fk.parent_object_id = {object}
+                 ORDER BY fk.name, fkc.constraint_column_id"
+            ))
+            .await?;
+        for (name, rows) in group_by_first(&foreign_keys) {
+            let cols = |i: usize| {
+                rows.iter()
+                    .map(|r| quote_ident(&text(r, i)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!(
+                "\nALTER TABLE {target} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}.{} ({})",
+                quote_ident(&name),
+                cols(3),
+                quote_ident(&text(rows[0], 1)),
+                quote_ident(&text(rows[0], 2)),
+                cols(4)
+            ));
+            for (event, action) in [("DELETE", text(rows[0], 5)), ("UPDATE", text(rows[0], 6))] {
+                if action != "NO_ACTION" && !action.is_empty() {
+                    out.push_str(&format!(" ON {event} {}", action.replace('_', " ")));
+                }
+            }
+            out.push_str(";\n");
+        }
+
+        let triggers = self
+            .metadata(format!(
+                "SELECT OBJECT_DEFINITION(object_id) FROM sys.triggers
+                 WHERE parent_id = {object} ORDER BY name"
+            ))
+            .await?;
+        let triggers: Vec<String> = triggers
+            .iter()
+            .map(|r| text(r, 0))
+            .filter(|d| !d.trim().is_empty())
+            .collect();
+        if !triggers.is_empty() {
+            out.push_str("GO\n");
+            for t in triggers {
+                out.push_str(&format!("\n{}\nGO\n", t.trim()));
+            }
+        }
+        Ok(out)
     }
 
     /// Runs a catalog query. In manual-commit mode a SELECT opens an implicit
@@ -1061,6 +1352,51 @@ fn sql_words(sql: &str) -> Vec<String> {
         }
     }
     words
+}
+
+/// A column's type as DDL writes it, for `sys.columns c JOIN sys.types t`.
+const COLUMN_TYPE: &str = "CASE WHEN t.is_user_defined = 1 THEN t.name
+         WHEN t.name IN ('varchar', 'char', 'varbinary', 'binary')
+           THEN t.name + '(' + CASE WHEN c.max_length = -1 THEN 'max'
+                ELSE CAST(c.max_length AS varchar(10)) END + ')'
+         WHEN t.name IN ('nvarchar', 'nchar')
+           THEN t.name + '(' + CASE WHEN c.max_length = -1 THEN 'max'
+                ELSE CAST(c.max_length / 2 AS varchar(10)) END + ')'
+         WHEN t.name IN ('decimal', 'numeric')
+           THEN t.name + '(' + CAST(c.precision AS varchar(10)) + ','
+                + CAST(c.scale AS varchar(10)) + ')'
+         WHEN t.name IN ('datetime2', 'time', 'datetimeoffset')
+           THEN t.name + '(' + CAST(c.scale AS varchar(10)) + ')'
+         ELSE t.name END";
+
+/// `OBJECT_ID` of `schema.name`, as an expression.
+fn object_id(schema: &str, name: &str) -> String {
+    format!(
+        "OBJECT_ID(QUOTENAME({}) + N'.' + QUOTENAME({}))",
+        nstr(schema),
+        nstr(name)
+    )
+}
+
+/// Consecutive rows sharing their first column (catalog rows ordered by name).
+fn group_by_first(rows: &[Vec<Option<String>>]) -> Vec<(String, Vec<&[Option<String>]>)> {
+    let mut groups: Vec<(String, Vec<&[Option<String>]>)> = Vec::new();
+    for row in rows {
+        let key = row.first().cloned().flatten().unwrap_or_default();
+        match groups.last_mut() {
+            Some((k, members)) if *k == key => members.push(row),
+            _ => groups.push((key, vec![row])),
+        }
+    }
+    groups
+}
+
+fn desc(is_descending: &str) -> &'static str {
+    if is_descending == "true" {
+        " DESC"
+    } else {
+        ""
+    }
 }
 
 /// T-SQL Unicode string literal.
@@ -2993,5 +3329,17 @@ mod tests {
             .await
             .expect("connect");
         crate::drivers::view_fixtures::check(&s, "sqlserver").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn ddl_sql() {
+        let Some((profile, password)) = test_profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, Some(&password))
+            .await
+            .expect("connect");
+        crate::drivers::ddl_fixtures::check(&s, "sqlserver", "dbo").await;
     }
 }

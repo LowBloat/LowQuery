@@ -1,4 +1,6 @@
 #[cfg(test)]
+mod ddl_fixtures;
+#[cfg(test)]
 mod integration_tests;
 pub mod mysql;
 pub mod oracle;
@@ -30,7 +32,7 @@ pub struct TxState {
 /// Every driver session exposes the same surface, used through [`dispatch!`]:
 /// `server_version`, `current_user` and `current_schema` fields, and
 /// `tx_state`, `execute`, `cancel`, `set_autocommit`, `end_transaction`,
-/// `list_schemas`, `list_objects` and `list_columns` methods with the
+/// `list_schemas`, `list_objects`, `list_columns` and `object_ddl` methods with the
 /// signatures used below. Rules every driver follows are in
 /// docs/ARCHITECTURE.md.
 #[allow(
@@ -157,6 +159,27 @@ impl Session {
 
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
         dispatch!(self, s => s.list_columns(schema, table).await)
+    }
+
+    /// The statements that create an object, read from the database's own
+    /// catalog. `kind` is one of the [`DbObject`] kinds.
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        let ddl = match self {
+            Session::Postgres(s) => s.object_ddl(schema, name, kind).await?,
+            Session::Oracle(s) => s.object_ddl(schema, name, kind).await?,
+            Session::Mysql(s) => s.object_ddl(schema, name, kind).await?,
+            Session::SqlServer(s) => s.object_ddl(schema, name, kind).await?,
+            Session::Sqlite(s) => s.object_ddl(schema, name, kind).await?,
+            Session::Redis(_) => {
+                return Err(AppError::invalid("Redis keys have no DDL."));
+            }
+        };
+        if ddl.trim().is_empty() {
+            return Err(AppError::not_found(format!(
+                "The database returned no definition for {name}. It may be encrypted, or this user may lack the privilege to read it."
+            )));
+        }
+        Ok(ddl)
     }
 }
 

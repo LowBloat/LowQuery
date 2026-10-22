@@ -356,9 +356,12 @@ impl OraSession {
     }
 
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
-        let rows = self
-            .query_rows(
-                "select c.column_name,
+        // DATA_DEFAULT is a LONG; the VARCHAR2 copy and IDENTITY_COLUMN
+        // arrived in 12.2, so older servers list the columns without defaults.
+        macro_rules! columns_sql {
+            ($default:literal) => {
+                concat!(
+                    "select c.column_name,
                         case
                           when c.data_type in ('VARCHAR2','NVARCHAR2','CHAR','NCHAR','RAW')
                             then c.data_type || '(' || case when c.char_length > 0 then c.char_length else c.data_length end || ')'
@@ -373,13 +376,30 @@ impl OraSession {
                            and kc.constraint_name = k.constraint_name
                           where k.owner = c.owner and k.table_name = c.table_name
                             and k.constraint_type = 'P' and kc.column_name = c.column_name)
-                        then 'Y' else 'N' end
-                 from all_tab_columns c
+                        then 'Y' else 'N' end, ",
+                    $default,
+                    " from all_tab_columns c
                  where c.owner = :1 and c.table_name = :2
-                 order by c.column_id",
-                vec![schema.to_string(), table.to_string()],
+                 order by c.column_id"
+                )
+            };
+        }
+        let params = vec![schema.to_string(), table.to_string()];
+        let rows = match self
+            .query_rows(
+                columns_sql!(
+                    "case when c.identity_column = 'YES' then null else trim(c.data_default_vc) end"
+                ),
+                params.clone(),
             )
-            .await?;
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) if e.kind == ErrorKind::Database => {
+                self.query_rows(columns_sql!("null"), params).await?
+            }
+            Err(e) => return Err(e),
+        };
         Ok(rows
             .into_iter()
             .map(|r| DbColumn {
@@ -387,8 +407,95 @@ impl OraSession {
                 type_name: r[1].clone(),
                 nullable: r[2] == "Y",
                 primary_key: r[3] == "Y",
+                default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
             })
             .collect())
+    }
+
+    /// DDL from `DBMS_METADATA`, with a table's indexes (other than those
+    /// behind its keys), triggers and comments.
+    pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
+        let object_type = match kind {
+            "table" => "TABLE",
+            "view" => "VIEW",
+            "matview" => "MATERIALIZED_VIEW",
+            "sequence" => "SEQUENCE",
+            "function" => "FUNCTION",
+            "procedure" => "PROCEDURE",
+            "package" => "PACKAGE",
+            "type" => "TYPE",
+            "synonym" => "SYNONYM",
+            _ => {
+                return Err(AppError::invalid(format!(
+                    "LowQuery cannot script a {kind} on Oracle."
+                )))
+            }
+        };
+        let _busy = self.busy.lock().await;
+        let params = vec![
+            object_type.to_string(),
+            name.to_string(),
+            schema.to_string(),
+        ];
+        let table = kind == "table";
+        self.with_conn(move |conn| {
+            conn.execute(
+                "begin
+                   dbms_metadata.set_transform_param(dbms_metadata.session_transform, 'SQLTERMINATOR', true);
+                   dbms_metadata.set_transform_param(dbms_metadata.session_transform, 'PRETTY', true);
+                   dbms_metadata.set_transform_param(dbms_metadata.session_transform, 'STORAGE', false);
+                 end;",
+                &[],
+            )
+            .map_err(map_error)?;
+            let outcome = (|| {
+                let mut parts = first_texts(
+                    conn,
+                    "select dbms_metadata.get_ddl(:1, :2, :3) from dual",
+                    &params,
+                )?;
+                if table {
+                    let owner_table = [params[2].clone(), params[1].clone()];
+                    for sql in [
+                        "select dbms_metadata.get_ddl('INDEX', i.index_name, i.owner)
+                         from all_indexes i
+                         where i.table_owner = :1 and i.table_name = :2 and i.index_type <> 'LOB'
+                           and not exists (
+                             select 1 from all_constraints k
+                             where k.owner = i.table_owner and k.table_name = i.table_name
+                               and k.index_name = i.index_name and k.constraint_type in ('P', 'U'))
+                         order by i.index_name",
+                        "select dbms_metadata.get_ddl('TRIGGER', t.trigger_name, t.owner)
+                         from all_triggers t
+                         where t.table_owner = :1 and t.table_name = :2
+                         order by t.trigger_name",
+                    ] {
+                        parts.extend(first_texts(conn, sql, &owner_table)?);
+                    }
+                    // ORA-31608 when the table has no comments.
+                    if let Ok(comments) = first_texts(
+                        conn,
+                        "select dbms_metadata.get_dependent_ddl('COMMENT', :1, :2) from dual",
+                        &[params[1].clone(), params[2].clone()],
+                    ) {
+                        parts.extend(comments);
+                    }
+                }
+                Ok(parts
+                    .iter()
+                    .map(|p| p.trim())
+                    .filter(|p| !p.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n")
+                    + "\n")
+            })();
+            let _ = conn.execute(
+                "begin dbms_metadata.set_transform_param(dbms_metadata.session_transform, 'DEFAULT'); end;",
+                &[],
+            );
+            outcome
+        })
+        .await
     }
 
     async fn query_strings(
@@ -442,6 +549,31 @@ impl OraSession {
         })
         .await
     }
+}
+
+/// First column of every row, as text.
+fn first_texts(conn: &Connection, sql: &str, params: &[String]) -> AppResult<Vec<String>> {
+    let binds: Vec<&dyn oracledb::ToDbValue> = params
+        .iter()
+        .map(|p| p as &dyn oracledb::ToDbValue)
+        .collect();
+    let cursor = conn
+        .statement(sql)
+        .map_err(map_error)?
+        .build()
+        .map_err(map_error)?
+        .query(&binds)
+        .map_err(map_error)?;
+    let mut out = Vec::new();
+    for row in cursor {
+        let row = row.map_err(map_error)?;
+        out.push(
+            row.get::<Option<String>>(0)
+                .map_err(map_error)?
+                .unwrap_or_default(),
+        );
+    }
+    Ok(out)
 }
 
 fn execute_blocking(

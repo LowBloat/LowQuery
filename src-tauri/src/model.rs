@@ -287,6 +287,8 @@ pub struct DbColumn {
     pub type_name: String,
     pub nullable: bool,
     pub primary_key: bool,
+    /// Default as an SQL expression, as the table definition writes it.
+    pub default_value: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
