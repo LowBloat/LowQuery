@@ -1,6 +1,6 @@
 [package]
 name = "lowquery"
-version = "0.5.0"
+version = "0.5.1"
 description = "Lightweight SQL client for multiple databases"
 authors = ["LowBloat"]
 license = "AGPL-3.0-only"

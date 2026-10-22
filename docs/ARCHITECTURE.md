@@ -41,6 +41,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `import/` | Reads connection files of DBeaver, DataGrip, pgAdmin 4 and SQL Developer (`jdbc.rs` parses JDBC URLs); passwords go from the file to the keychain without reaching the interface |
 | `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
 | `drivers/integration_tests.rs` | Tests against real servers (`#[ignore]`, see CONTRIBUTING) |
+| `drivers/view_fixtures.rs`, `drivers/ddl_fixtures.rs` | Run the SQL the interface writes (grid sort and filter, tree actions) against each real database |
 
 ### PostgreSQL
 
@@ -97,11 +98,27 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/state/workspace.svelte.ts` | Tabs, sessions, execution, transactions, drafts, saving grid edits |
 | `lib/state/edits.ts` | Pending grid edits per result and the changes sent to `apply_changes` |
 | `lib/state/explorer.svelte.ts` | Schema browser and autocompletion namespace |
+| `lib/state/actions.svelte.ts` | Context menu actions of the tree: confirmation dialogs, the table designer, statements run on the tree's session |
+| `lib/sql/ddl.ts` | CREATE/ALTER/RENAME/DROP/TRUNCATE and generated statements per engine, for the tree menus and the table designer |
 | `lib/state/ai.svelte.ts` | AI agents dialog: client setup and activity |
 | `lib/state/importer.svelte.ts` | Import dialog: detected tool files, preview, duplicate check |
 | `lib/state/tns.svelte.ts` | Detected `tnsnames.ora` sources and aliases for the connection and import dialogs |
 | `lib/components/` | Editor, grid, results, sidebar, dialogs |
 | `lib/dev-mock.ts` | Development-only backend for `bun run dev` in a browser |
+
+## Object DDL and tree actions
+
+`object_ddl` returns the statements that create an object, read from each database's own catalog rather than rebuilt by guesswork:
+
+| Database | Source |
+| --- | --- |
+| PostgreSQL | Tables built from `pg_attribute`, `pg_constraint` (`pg_get_constraintdef`), `pg_index` (`pg_get_indexdef`), triggers and comments; foreign keys follow as `ALTER TABLE`. Views, functions and sequences from `pg_get_viewdef`, `pg_get_functiondef` and `pg_sequence` |
+| Oracle | `DBMS_METADATA.GET_DDL`, plus the table's own indexes, triggers and comments |
+| MySQL, MariaDB | `SHOW CREATE TABLE/VIEW/FUNCTION/PROCEDURE/SEQUENCE`, triggers with `SHOW CREATE TRIGGER`, routines between `DELIMITER` lines |
+| SQL Server | `OBJECT_DEFINITION` for views, routines and triggers; tables, sequences, synonyms and alias types scripted from `sys.*` views; batches separated by `GO` |
+| SQLite | The statements kept in `sqlite_schema` for the table, its indexes and triggers |
+
+The statements the menus and the table designer run come from `lib/sql/ddl.ts`. They run one at a time on the tree's session (never a tab's, so an open transaction in a tab is not touched), and every one is shown before it runs. `ddl.fixtures.json` holds them for a fixed scenario per dialect; `drivers/ddl_fixtures.rs` runs that scenario on every database in CI, including a round trip of the DDL each driver reads back (drop the object, run its DDL, compare the columns).
 
 Scripts are split in the interface so the editor knows where each statement starts. Each statement is a separate command call: results appear as they finish, and an error position maps back to the document.
 

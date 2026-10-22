@@ -49,6 +49,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 - **Works with AI agents.** A built-in MCP server lets Claude, Cursor, VS Code, Codex and other agents list the connections you open to them, read schemas, find tables and run SQL. Each connection is off, read-only or read-write for agents, read-only is enforced by the database session itself, and every call is logged. See [docs/AI.md](docs/AI.md).
 - **Bring your connections with you.** Import them from DBeaver, DataGrip, pgAdmin 4, Oracle SQL Developer or `tnsnames.ora`. DBeaver's saved passwords go straight to your system keychain.
 - **Edit rows where you read them.** When a result comes from one table and includes its primary key, change cells, add, duplicate or delete rows in the grid and save them in one transaction. LowQuery asks the database which table and key each column comes from instead of guessing from the SQL, binds every value with its column type, and undoes the whole save when a row's key no longer matches exactly one row.
+- **Manage objects from the tree.** Right-click a connection, schema or table: create, edit, rename, duplicate, empty or drop tables in a designer that writes each engine's own `ALTER TABLE`, show any object's DDL as the database itself scripts it, generate SELECT/INSERT/UPDATE/DELETE, create schemas and databases, or see the server's sessions. Every change shows its SQL before it runs and can open in the editor instead.
 - **Errors you can act on.** Native codes (SQLSTATE, ORA-NNNNN), detail and hint, with the failing token underlined in the editor.
 
 | Writing queries | Reading results |
@@ -92,7 +93,7 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 1. Open LowQuery and choose **New connection**.
 2. Choose the database by its logo, fill in the server and user (or the file, for SQLite), and choose **Test connection**. For Oracle, **TNS alias** lists the aliases from the detected Oracle client.
    Already use another tool? **Import connections** in the sidebar brings them from DBeaver (with user names and saved passwords), DataGrip, pgAdmin 4, Oracle SQL Developer or a `tnsnames.ora`, without changing anything in the other tool.
-3. Save. The connection appears in the sidebar; expand it to browse schemas, tables and columns.
+3. Save. The connection appears in the sidebar; expand it to browse schemas, tables and columns, and right-click any of them for its actions.
 4. Type SQL in the editor and press **Ctrl+Enter** (⌘+Enter on macOS) to run the statement under the cursor, or **Ctrl+Shift+Enter** / **F5** to run the whole script.
 
 | Shortcut | Action |
