@@ -21,6 +21,7 @@
 	import { workspace, type QueryTab, type ResultSet } from "../state/workspace.svelte";
 	import { pendingCount } from "../state/edits";
 	import { cellsToTsv, toCsv, toJson } from "../export";
+	import { viewRows } from "../view";
 
 	interface Props {
 		tab: QueryTab;
@@ -40,10 +41,14 @@
 		if (logEl) logEl.scrollTop = logEl.scrollHeight;
 	});
 
+	// Rows in the order the grid shows them.
+	const shown = (r: ResultSet) =>
+		r.serverView ? r.result.rows : viewRows(r.result.columns ?? [], r.result.rows, r.view);
+
 	async function copyAll(r: ResultSet) {
 		const cols = r.result.columns ?? [];
 		try {
-			await navigator.clipboard.writeText(cellsToTsv([cols.map((c) => c.name), ...r.result.rows]));
+			await navigator.clipboard.writeText(cellsToTsv([cols.map((c) => c.name), ...shown(r)]));
 			toast.success("Result copied (TSV)");
 		} catch {
 			toast.error("Could not access the clipboard.");
@@ -58,10 +63,11 @@
 			filters: [{ name: format.toUpperCase(), extensions: [format] }],
 		});
 		if (!path) return;
-		const content = format === "csv" ? "﻿" + toCsv(cols, r.result.rows) : toJson(cols, r.result.rows);
+		const rows = shown(r);
+		const content = format === "csv" ? "﻿" + toCsv(cols, rows) : toJson(cols, rows);
 		try {
 			await invoke("write_text_file", { path, content });
-			const n = r.result.rows.length;
+			const n = rows.length;
 			toast.success(`Exported ${n.toLocaleString()} ${n === 1 ? "row" : "rows"}`);
 		} catch (e) {
 			toast.error(`Could not save: ${(e as { message?: string }).message ?? e}`);
@@ -131,7 +137,11 @@
 						{current.result.rows.length === 1 ? "row" : "rows"} · {current.result.elapsedMs} ms
 					</span>
 					{#if current.result.truncated}
-						<Tooltip content="More rows available. Raise the limit to fetch more.">
+						<Tooltip
+							content="More rows available. Raise the limit to fetch more. {current.serverView
+								? 'Sorting runs the query again on the server.'
+								: 'Sorting covers the fetched rows only.'}"
+						>
 							<Chip label="Limit {tab.maxRows.toLocaleString()}" variant="warning" size="sm" />
 						</Tooltip>
 					{/if}
@@ -162,6 +172,10 @@
 						editable={r.result.editable}
 						edits={r.edits}
 						onsave={() => workspace.saveEdits(tab, r)}
+						view={r.view}
+						localView={!r.serverView}
+						onview={(v) => workspace.setView(tab, r, v)}
+						busy={tab.running}
 					/>
 				{/if}
 			</TabsContent>

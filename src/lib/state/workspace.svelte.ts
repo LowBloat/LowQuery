@@ -11,6 +11,7 @@ import {
 import { engineInfo } from "../engines";
 import { firstKeywords, splitStatements, statementAt, type SqlStatement } from "../sql/split";
 import { buildChanges, pendingCount, type EditMap } from "./edits";
+import { canViewOnServer, describeView, emptyView, viewSql, type ResultView } from "../view";
 
 export interface ResultSet {
 	id: string;
@@ -19,6 +20,16 @@ export interface ResultSet {
 	result: ExecResult;
 	/** Unsaved grid edits; only for results with `result.editable`. */
 	edits: EditMap;
+	/** Sort shown in the grid. */
+	view: ResultView;
+	/**
+	 * The view runs on the server: the query hit the row limit, so sorting
+	 * the fetched rows would leave the others out. Otherwise the grid applies
+	 * the view in memory.
+	 */
+	serverView: boolean;
+	/** The SQL behind `result`: `sql`, or `sql` with the server view around it. */
+	runSql: string;
 }
 
 export type LogLevel = "info" | "success" | "notice" | "error";
@@ -404,6 +415,9 @@ export class Workspace {
 							sql: stmt.text,
 							result,
 							edits: {},
+							view: emptyView(),
+							serverView: result.truncated && canViewOnServer(stmt.text, dialect),
+							runSql: stmt.text,
 						});
 						if (tab.results.length === 1) tab.activeResult = id;
 						tab.addLog(
@@ -524,11 +538,90 @@ export class Workspace {
 	private async refreshResult(tab: QueryTab, rs: ResultSet) {
 		if (!tab.session) return;
 		try {
-			const result = await api.execute(tab.session.sessionId, rs.sql, tab.maxRows);
+			const result = await api.execute(tab.session.sessionId, rs.runSql, tab.maxRows);
 			tab.inTransaction = result.inTransaction;
-			if (result.columns) rs.result = result;
+			if (result.columns) rs.result = keepEditTarget(rs.result, result);
 		} catch (e) {
-			tab.addLog("notice", `The result could not be refreshed: ${asAppError(e).message}`, { sql: rs.sql });
+			tab.addLog("notice", `The result could not be refreshed: ${asAppError(e).message}`, { sql: rs.runSql });
+		}
+	}
+
+	/**
+	 * Sorts a result. In memory when every row is loaded; otherwise the query
+	 * runs again with the sort around it. If the database rejects that query,
+	 * the grid sorts the fetched rows and the log says why.
+	 */
+	async setView(tab: QueryTab, rs: ResultSet, view: ResultView) {
+		if (!rs.serverView) {
+			rs.view = view;
+			return;
+		}
+		if (tab.running || tab.saving) return;
+		const columns = rs.result.columns ?? [];
+		const local = (reason: string, sql?: string) => {
+			rs.serverView = false;
+			rs.view = view;
+			const n = rs.result.rows.length.toLocaleString();
+			tab.addLog("notice", `${reason} The grid sorts the ${n} fetched rows only.`, { sql });
+			toast.warning(`Sorted the ${n} fetched rows only. See Messages.`);
+		};
+		const profile = this.profile(tab.profileId);
+		if (!tab.session || !profile) {
+			local("The connection is closed, so the query could not run again sorted.");
+			return;
+		}
+		const n = pendingCount(rs.edits);
+		if (
+			n > 0 &&
+			!(await this.confirm.ask({
+				title: "Discard unsaved changes?",
+				message: `Sorting runs the query again. ${n} ${n === 1 ? "row has" : "rows have"} unsaved changes in this result.`,
+				confirmLabel: "Discard changes",
+				destructive: true,
+			}))
+		)
+			return;
+
+		const dialect = engineInfo(profile.engine).dialect;
+		const sql = viewSql(rs.sql, view, dialect);
+		const sessionId = tab.session.sessionId;
+		// A failed statement aborts an open PostgreSQL transaction; a savepoint keeps it usable.
+		const savepoint = dialect === "postgres" && tab.inTransaction;
+		tab.running = true;
+		try {
+			if (savepoint) await api.execute(sessionId, "SAVEPOINT lq_view", 0);
+			let result: ExecResult;
+			try {
+				result = await api.execute(sessionId, sql, tab.maxRows);
+			} catch (e) {
+				if (savepoint) await api.execute(sessionId, "ROLLBACK TO SAVEPOINT lq_view", 0).catch(() => {});
+				throw e;
+			}
+			if (savepoint) result.inTransaction = (await api.execute(sessionId, "RELEASE SAVEPOINT lq_view", 0)).inTransaction;
+			tab.inTransaction = result.inTransaction;
+			if (!result.columns) throw new Error("The query returned no rows.");
+			rs.result = keepEditTarget(rs.result, result);
+			rs.edits = {};
+			rs.view = view;
+			rs.runSql = sql;
+			const count = result.rows.length;
+			tab.addLog(
+				"success",
+				`Sorted on the server (${describeView(columns, view)}): ${count.toLocaleString()} ${count === 1 ? "row" : "rows"}${result.truncated ? " (limit reached)" : ""}`,
+				{ sql, elapsedMs: result.elapsedMs },
+			);
+		} catch (e) {
+			const err = asAppError(e);
+			if (err.kind === "connection" || err.kind === "not_found") {
+				tab.session = null;
+				tab.inTransaction = false;
+			}
+			if (err.kind === "cancelled") tab.addLog("notice", "Sorting cancelled.", { sql });
+			else local(`The database could not sort the query: ${err.message}`, sql);
+		} finally {
+			tab.running = false;
+			tab.cancelling = false;
+			tab.stopRequested = false;
 		}
 	}
 
@@ -574,3 +667,19 @@ export class Workspace {
 }
 
 export const workspace = new Workspace();
+
+/**
+ * Editing depends on the statement, not on how it is sorted: the view keeps
+ * the columns of the first run, so its edit target still applies even when
+ * the database cannot trace the wrapped query back to the table.
+ */
+function keepEditTarget(previous: ExecResult, next: ExecResult): ExecResult {
+	const a = previous.columns ?? [];
+	const b = next.columns ?? [];
+	const same = a.length === b.length && a.every((c, i) => c.name === b[i].name && c.typeName === b[i].typeName);
+	if (same) {
+		next.editable = previous.editable;
+		next.readOnlyReason = previous.readOnlyReason;
+	}
+	return next;
+}

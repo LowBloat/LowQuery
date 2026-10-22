@@ -38,6 +38,7 @@
 		toggleDelete,
 		type EditMap,
 	} from "../state/edits";
+	import { emptyView, nextSort, viewOrder, type ResultView } from "../view";
 
 	interface Props {
 		columns: ColumnInfo[];
@@ -47,9 +48,27 @@
 		editable?: EditTarget | null;
 		edits?: EditMap;
 		onsave?: () => void;
+		/** Sort shown in the grid. */
+		view?: ResultView;
+		/** Apply `view` to `rows` here; false when the rows already come sorted from the server. */
+		localView?: boolean;
+		onview?: (view: ResultView) => void;
+		/** A query for this result is running: the header shows it and ignores clicks. */
+		busy?: boolean;
 	}
 
-	let { columns, rows, label = "Result", editable = null, edits, onsave }: Props = $props();
+	let {
+		columns,
+		rows,
+		label = "Result",
+		editable = null,
+		edits,
+		onsave,
+		view = emptyView(),
+		localView = true,
+		onview,
+		busy = false,
+	}: Props = $props();
 
 	const ROW_H = 26;
 	const HEAD_H = 32;
@@ -78,7 +97,7 @@
 	let scrollTop = $state(0);
 	let height = $state(400);
 	let widths = $state<number[]>([]);
-	let sort = $state<{ col: number; dir: 1 | -1 } | null>(null);
+	const sort = $derived(view.sort);
 	let active = $state<{ row: number; col: number } | null>(null);
 	let editing = $state<CellEdit | null>(null);
 	let viewer = $state<{
@@ -90,27 +109,8 @@
 	let viewerText = $state("");
 	let menu = $state<{ x: number; y: number; row: number; col: number } | null>(null);
 
-	// Indexes of the result rows in display order (local sort, no new query).
-	const order = $derived.by(() => {
-		const idx = rows.map((_, i) => i);
-		if (!sort) return idx;
-		const { col, dir } = sort;
-		const numeric = columns[col]?.kind === "number";
-		const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
-		idx.sort((a, b) => {
-			const va = rows[a][col];
-			const vb = rows[b][col];
-			if (va === vb) return 0;
-			if (va === null) return 1;
-			if (vb === null) return -1;
-			if (numeric) {
-				const d = Number(va) - Number(vb);
-				if (!Number.isNaN(d) && d !== 0) return d * dir;
-			}
-			return collator.compare(va, vb) * dir;
-		});
-		return idx;
-	});
+	// Indexes of the result rows in display order (in memory, no new query).
+	const order = $derived(localView ? viewOrder(columns, rows, view) : rows.map((_, i) => i));
 
 	// Result rows, then new rows at the end.
 	const display = $derived.by((): DisplayRow[] => {
@@ -154,7 +154,7 @@
 		});
 	}
 
-	// New columns: recompute widths, clear sort and selection. The same
+	// New columns: recompute widths, clear the selection. The same
 	// columns again (the result refreshed after saving) keep the layout.
 	let signature = "";
 	$effect(() => {
@@ -168,7 +168,6 @@
 			}
 			signature = sig;
 			measureWidths();
-			sort = null;
 			active = null;
 			if (viewport) viewport.scrollTop = 0;
 			scrollTop = 0;
@@ -182,9 +181,9 @@
 	});
 
 	function toggleSort(col: number) {
-		if (sort?.col !== col) sort = { col, dir: 1 };
-		else if (sort.dir === 1) sort = { col, dir: -1 };
-		else sort = null;
+		if (busy) return;
+		commitEdit();
+		onview?.({ ...view, sort: nextSort(sort, col) });
 	}
 
 	// Column resize by dragging the header edge.
@@ -476,6 +475,8 @@
 
 <div
 	class="lq-grid"
+	class:lq-grid--busy={busy}
+	aria-busy={busy}
 	bind:this={viewport}
 	onscroll={() => (scrollTop = viewport.scrollTop)}
 	role="grid"
@@ -709,6 +710,10 @@
 		font-size: 13px;
 		outline: none;
 		overscroll-behavior: contain;
+	}
+	.lq-grid--busy .lq-grid__inner {
+		opacity: 0.55;
+		cursor: progress;
 	}
 	.lq-grid:focus-visible {
 		box-shadow: inset 0 0 0 2px var(--ca-focus-ring);

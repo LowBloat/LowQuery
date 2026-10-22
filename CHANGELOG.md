@@ -4,6 +4,9 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+- Result grid: sorting by a column of a result that hit the row limit only reordered the fetched rows, so the first rows of the whole result never showed up. Such a result now runs again on the server ordered by that column (the statement goes inside `SELECT * FROM (...) ORDER BY <position>`); a result that fit within the limit still sorts in memory. The result stays editable, unsaved edits ask first, an open PostgreSQL transaction is protected by a savepoint, and if the database rejects the sorted query the grid sorts the fetched rows and says why in Messages. Copy and CSV/JSON export follow the order shown. ([#3](https://github.com/LowBloat/LowQuery/issues/3))
+
 ## [0.4.0] - 2026-10-20
 
 ### Added

@@ -152,6 +152,21 @@ function execute(sql: string, maxRows: number): ExecResult {
 		let rows = CUSTOMERS;
 		if (/\bwhere\s+active\b/.test(s)) rows = rows.filter((r) => r[6] === "true");
 		if (/\border\s+by\s+balance\s+desc\b/.test(s)) rows = [...rows].sort((a, b) => Number(b[4]) - Number(a[4]));
+		// Sort from the result grid: `SELECT * FROM (...) lq_view ORDER BY <n> ASC|DESC`.
+		const sorted = /\)\s*lq_view\s+order\s+by\s+(\d+)\s+(asc|desc)/.exec(s);
+		if (sorted) {
+			const col = Number(sorted[1]) - 1;
+			const dir = sorted[2] === "asc" ? 1 : -1;
+			const numeric = col === 0 || col === 4;
+			rows = [...rows].sort((a, b) => {
+				const va = a[col];
+				const vb = b[col];
+				if (va === vb) return 0;
+				if (va === null) return 1;
+				if (vb === null) return -1;
+				return (numeric ? Number(va) - Number(vb) : va.localeCompare(vb)) * dir;
+			});
+		}
 		const total = rows.length;
 		const joined = /\bjoin\b|,\s*orders\b/.test(s);
 		return {
