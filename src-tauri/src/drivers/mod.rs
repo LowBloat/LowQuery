@@ -8,6 +8,8 @@ pub mod redis_db;
 pub mod sqlite;
 pub mod sqlserver;
 pub mod tns;
+#[cfg(test)]
+mod view_fixtures;
 
 use crate::error::{AppError, AppResult};
 use crate::model::{

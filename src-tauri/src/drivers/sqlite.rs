@@ -2642,4 +2642,15 @@ mod tests {
             texts(&[&[Some("1"), Some("A")], &[Some("10"), Some("c")]])
         );
     }
+
+    #[tokio::test]
+    async fn result_view_sql() {
+        let path = temp_path("view");
+        let s = crate::drivers::Session::open(&profile(&path, true), None)
+            .await
+            .unwrap();
+        crate::drivers::view_fixtures::check(&s, "sqlite").await;
+        drop(s);
+        let _ = std::fs::remove_file(&path);
+    }
 }

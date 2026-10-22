@@ -2726,4 +2726,16 @@ mod tests {
         assert_eq!(r.deleted, 1);
         run(&s, "DROP TABLE `lq_edit_Mixed Case`").await;
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn result_view_sql() {
+        let Some((profile, password)) = profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, password.as_deref())
+            .await
+            .expect("connect");
+        crate::drivers::view_fixtures::check(&s, "mysql").await;
+    }
 }

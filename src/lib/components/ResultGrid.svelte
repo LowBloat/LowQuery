@@ -474,6 +474,8 @@
 	}
 
 	function onkeydown(e: KeyboardEvent) {
+		// Header buttons (sort, filter) handle their own keys.
+		if (e.target instanceof HTMLElement && e.target.closest("button")) return;
 		if (display.length === 0 || columns.length === 0) {
 			if (editable && edits && e.key === "Insert") newRow();
 			return;

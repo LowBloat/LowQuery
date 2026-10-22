@@ -1,0 +1,494 @@
+{
+	"dialects": {
+		"postgres": {
+			"cases": [
+				{
+					"label": "sort text descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nORDER BY 2 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1",
+						"3"
+					]
+				},
+				{
+					"label": "sort text ascending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nORDER BY 2 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"2",
+						"4",
+						"3"
+					]
+				},
+				{
+					"label": "contains, any case",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE STRPOS(LOWER(CAST(\"name\" AS TEXT)), LOWER('ALP')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "contains a quote",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE STRPOS(LOWER(CAST(\"name\" AS TEXT)), LOWER('''')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"4"
+					]
+				},
+				{
+					"label": "contains in a date",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE STRPOS(LOWER(CAST(\"created\" AS TEXT)), LOWER('2026-10')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"4"
+					]
+				},
+				{
+					"label": "equals a number",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE \"id\" = 2\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"2"
+					]
+				},
+				{
+					"label": "equals text",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE CAST(\"name\" AS TEXT) = 'Alpha'\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "number column, text value",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE CAST(\"id\" AS TEXT) = 'x'\nORDER BY 1 ASC NULLS LAST",
+					"ids": []
+				},
+				{
+					"label": "not equal keeps NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE (\"name\" IS NULL OR NOT (CAST(\"name\" AS TEXT) = 'beta'))\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"3",
+						"4"
+					]
+				},
+				{
+					"label": "is NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE \"name\" IS NULL\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"3"
+					]
+				},
+				{
+					"label": "is not NULL, descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE \"name\" IS NOT NULL\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1"
+					]
+				},
+				{
+					"label": "filters combine with AND",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE \"name\" IS NOT NULL\n  AND (\"id\" IS NULL OR NOT (\"id\" = 1))\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2"
+					]
+				}
+			]
+		},
+		"oracle": {
+			"cases": [
+				{
+					"label": "sort text descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nORDER BY 2 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1",
+						"3"
+					]
+				},
+				{
+					"label": "sort text ascending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nORDER BY 2 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"2",
+						"4",
+						"3"
+					]
+				},
+				{
+					"label": "contains, any case",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE INSTR(UPPER(TO_CHAR(\"NAME\")), UPPER('ALP')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "contains a quote",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE INSTR(UPPER(TO_CHAR(\"NAME\")), UPPER('''')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"4"
+					]
+				},
+				{
+					"label": "contains in a date",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE INSTR(UPPER(TO_CHAR(\"CREATED\", 'YYYY-MM-DD HH24:MI:SS')), UPPER('2026-10')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"4"
+					]
+				},
+				{
+					"label": "equals a number",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE \"ID\" = 2\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"2"
+					]
+				},
+				{
+					"label": "equals text",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE TO_CHAR(\"NAME\") = 'Alpha'\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "number column, text value",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE TO_CHAR(\"ID\") = 'x'\nORDER BY 1 ASC NULLS LAST",
+					"ids": []
+				},
+				{
+					"label": "not equal keeps NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE (\"NAME\" IS NULL OR NOT (TO_CHAR(\"NAME\") = 'beta'))\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"3",
+						"4"
+					]
+				},
+				{
+					"label": "is NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE \"NAME\" IS NULL\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"3"
+					]
+				},
+				{
+					"label": "is not NULL, descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE \"NAME\" IS NOT NULL\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1"
+					]
+				},
+				{
+					"label": "filters combine with AND",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created FROM dual\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05' FROM dual\nUNION ALL SELECT 3, NULL, NULL FROM dual\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01' FROM dual\n) lq_view\nWHERE \"NAME\" IS NOT NULL\n  AND (\"ID\" IS NULL OR NOT (\"ID\" = 1))\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2"
+					]
+				}
+			]
+		},
+		"mysql": {
+			"cases": [
+				{
+					"label": "sort text descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nORDER BY 2 DESC",
+					"ids": [
+						"4",
+						"2",
+						"1",
+						"3"
+					]
+				},
+				{
+					"label": "sort text ascending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nORDER BY 2 ASC",
+					"ids": [
+						"3",
+						"1",
+						"2",
+						"4"
+					]
+				},
+				{
+					"label": "contains, any case",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE LOCATE(LOWER('ALP'), LOWER(CAST(`name` AS CHAR))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "contains a quote",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE LOCATE(LOWER(''''), LOWER(CAST(`name` AS CHAR))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"4"
+					]
+				},
+				{
+					"label": "contains in a date",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE LOCATE(LOWER('2026-10'), LOWER(CAST(`created` AS CHAR))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"1",
+						"4"
+					]
+				},
+				{
+					"label": "equals a number",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE `id` = 2\nORDER BY 1 ASC",
+					"ids": [
+						"2"
+					]
+				},
+				{
+					"label": "equals text",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE CAST(`name` AS CHAR) = 'Alpha'\nORDER BY 1 ASC",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "number column, text value",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE CAST(`id` AS CHAR) = 'x'\nORDER BY 1 ASC",
+					"ids": []
+				},
+				{
+					"label": "not equal keeps NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE (`name` IS NULL OR NOT (CAST(`name` AS CHAR) = 'beta'))\nORDER BY 1 ASC",
+					"ids": [
+						"1",
+						"3",
+						"4"
+					]
+				},
+				{
+					"label": "is NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE `name` IS NULL\nORDER BY 1 ASC",
+					"ids": [
+						"3"
+					]
+				},
+				{
+					"label": "is not NULL, descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE `name` IS NOT NULL\nORDER BY 1 DESC",
+					"ids": [
+						"4",
+						"2",
+						"1"
+					]
+				},
+				{
+					"label": "filters combine with AND",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, DATE '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', DATE '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', DATE '2026-10-01'\n) lq_view\nWHERE `name` IS NOT NULL\n  AND (`id` IS NULL OR NOT (`id` = 1))\nORDER BY 1 DESC",
+					"ids": [
+						"4",
+						"2"
+					]
+				}
+			]
+		},
+		"sqlserver": {
+			"cases": [
+				{
+					"label": "sort text descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nORDER BY 2 DESC",
+					"ids": [
+						"4",
+						"2",
+						"1",
+						"3"
+					]
+				},
+				{
+					"label": "sort text ascending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nORDER BY 2 ASC",
+					"ids": [
+						"3",
+						"1",
+						"2",
+						"4"
+					]
+				},
+				{
+					"label": "contains, any case",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE CHARINDEX(LOWER(N'ALP'), LOWER(CAST([name] AS nvarchar(max)))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "contains a quote",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE CHARINDEX(LOWER(N''''), LOWER(CAST([name] AS nvarchar(max)))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"4"
+					]
+				},
+				{
+					"label": "contains in a date",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE CHARINDEX(LOWER(N'2026-10'), LOWER(CONVERT(nvarchar(max), [created], 121))) > 0\nORDER BY 1 ASC",
+					"ids": [
+						"1",
+						"4"
+					]
+				},
+				{
+					"label": "equals a number",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE [id] = 2\nORDER BY 1 ASC",
+					"ids": [
+						"2"
+					]
+				},
+				{
+					"label": "equals text",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE CAST([name] AS nvarchar(max)) = N'Alpha'\nORDER BY 1 ASC",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "number column, text value",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE CAST([id] AS nvarchar(max)) = N'x'\nORDER BY 1 ASC",
+					"ids": []
+				},
+				{
+					"label": "not equal keeps NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE ([name] IS NULL OR NOT (CAST([name] AS nvarchar(max)) = N'beta'))\nORDER BY 1 ASC",
+					"ids": [
+						"1",
+						"3",
+						"4"
+					]
+				},
+				{
+					"label": "is NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE [name] IS NULL\nORDER BY 1 ASC",
+					"ids": [
+						"3"
+					]
+				},
+				{
+					"label": "is not NULL, descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE [name] IS NOT NULL\nORDER BY 1 DESC",
+					"ids": [
+						"4",
+						"2",
+						"1"
+					]
+				},
+				{
+					"label": "filters combine with AND",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, N'Alpha' AS name, CAST('2026-10-22' AS date) AS created\nUNION ALL SELECT 2, N'beta', CAST('2025-01-05' AS date)\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, N'it''s', CAST('2026-10-01' AS date)\n) lq_view\nWHERE [name] IS NOT NULL\n  AND ([id] IS NULL OR NOT ([id] = 1))\nORDER BY 1 DESC",
+					"ids": [
+						"4",
+						"2"
+					]
+				}
+			]
+		},
+		"sqlite": {
+			"cases": [
+				{
+					"label": "sort text descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nORDER BY 2 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1",
+						"3"
+					]
+				},
+				{
+					"label": "sort text ascending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nORDER BY 2 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"2",
+						"4",
+						"3"
+					]
+				},
+				{
+					"label": "contains, any case",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE INSTR(LOWER(CAST(\"name\" AS TEXT)), LOWER('ALP')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "contains a quote",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE INSTR(LOWER(CAST(\"name\" AS TEXT)), LOWER('''')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"4"
+					]
+				},
+				{
+					"label": "contains in a date",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE INSTR(LOWER(CAST(\"created\" AS TEXT)), LOWER('2026-10')) > 0\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"4"
+					]
+				},
+				{
+					"label": "equals a number",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE \"id\" = 2\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"2"
+					]
+				},
+				{
+					"label": "equals text",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE CAST(\"name\" AS TEXT) = 'Alpha'\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1"
+					]
+				},
+				{
+					"label": "number column, text value",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE CAST(\"id\" AS TEXT) = 'x'\nORDER BY 1 ASC NULLS LAST",
+					"ids": []
+				},
+				{
+					"label": "not equal keeps NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE (\"name\" IS NULL OR NOT (CAST(\"name\" AS TEXT) = 'beta'))\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"1",
+						"3",
+						"4"
+					]
+				},
+				{
+					"label": "is NULL",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE \"name\" IS NULL\nORDER BY 1 ASC NULLS LAST",
+					"ids": [
+						"3"
+					]
+				},
+				{
+					"label": "is not NULL, descending",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE \"name\" IS NOT NULL\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2",
+						"1"
+					]
+				},
+				{
+					"label": "filters combine with AND",
+					"sql": "SELECT * FROM (\nSELECT 1 AS id, 'Alpha' AS name, '2026-10-22' AS created\nUNION ALL SELECT 2, 'beta', '2025-01-05'\nUNION ALL SELECT 3, NULL, NULL\nUNION ALL SELECT 4, 'it''s', '2026-10-01'\n) lq_view\nWHERE \"name\" IS NOT NULL\n  AND (\"id\" IS NULL OR NOT (\"id\" = 1))\nORDER BY 1 DESC NULLS LAST",
+					"ids": [
+						"4",
+						"2"
+					]
+				}
+			]
+		}
+	}
+}

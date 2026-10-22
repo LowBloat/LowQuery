@@ -478,3 +478,27 @@ async fn oracle_connects_through_tns_alias() {
     std::env::remove_var("TNS_ADMIN");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[tokio::test]
+#[ignore]
+async fn postgres_result_view_sql() {
+    let Some((profile, pw)) = pg_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    super::view_fixtures::check(&s, "postgres").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn oracle_result_view_sql() {
+    let Some((profile, pw)) = ora_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    super::view_fixtures::check(&s, "oracle").await;
+}

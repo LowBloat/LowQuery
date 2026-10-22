@@ -2982,4 +2982,16 @@ mod tests {
             .await
             .unwrap();
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn result_view_sql() {
+        let Some((profile, password)) = test_profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, Some(&password))
+            .await
+            .expect("connect");
+        crate::drivers::view_fixtures::check(&s, "sqlserver").await;
+    }
 }
