@@ -577,6 +577,42 @@ export function oracleUserTemplate(): string {
 	return 'CREATE USER new_schema IDENTIFIED BY "change_me";\nGRANT CREATE SESSION, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE TO new_schema;\nALTER USER new_schema QUOTA UNLIMITED ON USERS;';
 }
 
+/** Kinds whose DDL the driver can read (`object_ddl`). */
+export function hasDdl(kind: string, engine: Engine): boolean {
+	switch (engine) {
+		case "postgres":
+			return ["table", "view", "matview", "foreign", "sequence", "function", "procedure"].includes(kind);
+		case "oracle":
+			return ["table", "view", "matview", "sequence", "function", "procedure", "package", "type", "synonym"].includes(kind);
+		case "mysql":
+		case "mariadb":
+			return ["table", "view", "sequence", "function", "procedure"].includes(kind);
+		case "sqlserver":
+			return ["table", "view", "sequence", "function", "procedure", "synonym", "type"].includes(kind);
+		case "sqlite":
+			return kind === "table" || kind === "view";
+		case "redis":
+			return false;
+	}
+}
+
+/** Object templates the schema menu offers. */
+export function templateKinds(engine: Engine): ("view" | "function" | "procedure" | "sequence")[] {
+	switch (engine) {
+		case "postgres":
+		case "oracle":
+		case "sqlserver":
+		case "mariadb":
+			return ["view", "function", "procedure", "sequence"];
+		case "mysql":
+			return ["view", "function", "procedure"];
+		case "sqlite":
+			return ["view"];
+		case "redis":
+			return [];
+	}
+}
+
 // ---- Redis keys ---------------------------------------------------------------
 
 export function redisKeySql(action: "delete" | "rename" | "expire" | "persist", key: string, value = ""): string {

@@ -1602,6 +1602,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn column_defaults_become_sql() {
+        // MySQL: bare values, expressions marked DEFAULT_GENERATED.
+        assert_eq!(default_expr("it's", "", false).as_deref(), Some("'it''s'"));
+        assert_eq!(default_expr("0", "", false).as_deref(), Some("'0'"));
+        assert_eq!(default_expr("b'1'", "", false).as_deref(), Some("b'1'"));
+        assert_eq!(
+            default_expr("CURRENT_TIMESTAMP", "DEFAULT_GENERATED", false).as_deref(),
+            Some("CURRENT_TIMESTAMP")
+        );
+        assert_eq!(
+            default_expr("uuid()", "DEFAULT_GENERATED", false).as_deref(),
+            Some("(uuid())")
+        );
+        // MariaDB: already SQL, with NULL spelled out.
+        assert_eq!(default_expr("'x'", "", true).as_deref(), Some("'x'"));
+        assert_eq!(default_expr("NULL", "", true), None);
+    }
+
+    #[test]
     fn finds_syntax_error_position() {
         let msg = |near: &str, line: usize| {
             format!(

@@ -99,6 +99,30 @@ class Explorer {
 		await this.load(profile);
 	}
 
+	/** The tree's session, connecting (and expanding the connection) when needed. */
+	async sessionFor(profile: ConnectionProfile): Promise<string | null> {
+		if (!this.trees[profile.id]?.sessionId) await this.load(profile);
+		return this.trees[profile.id]?.sessionId ?? null;
+	}
+
+	/** Lists the schema's objects again, keeping it expanded. */
+	async refreshSchema(profileId: string, schemaName: string) {
+		const s = this.trees[profileId]?.schemas?.find((x) => x.name === schemaName);
+		if (!s) return;
+		s.objects = null;
+		s.expanded = false;
+		await this.toggleSchema(profileId, s);
+	}
+
+	/** The object's columns, loading them without expanding the node. */
+	async columns(profile: ConnectionProfile, schema: SchemaNode, obj: ObjectNode): Promise<DbColumn[]> {
+		if (obj.columns) return obj.columns;
+		const sessionId = await this.sessionFor(profile);
+		if (!sessionId) return [];
+		obj.columns = await api.listColumns(sessionId, schema.name, obj.name);
+		return obj.columns;
+	}
+
 	async close(profileId: string) {
 		const t = this.trees[profileId];
 		if (t?.sessionId) await api.closeSession(t.sessionId).catch(() => {});

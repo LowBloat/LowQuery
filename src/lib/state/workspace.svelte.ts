@@ -225,6 +225,14 @@ export class Workspace {
 		return tab;
 	}
 
+	/** A new tab with generated SQL (DDL, templates), not run. */
+	openScript(profileId: string, title: string, sql: string): QueryTab {
+		const tab = this.newTab(profileId, sql);
+		tab.title = title;
+		this.saveDrafts();
+		return tab;
+	}
+
 	async closeTab(id: string) {
 		const idx = this.tabs.findIndex((t) => t.id === id);
 		if (idx < 0) return;

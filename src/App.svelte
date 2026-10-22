@@ -12,6 +12,8 @@
 	import { updates } from "./lib/state/updates.svelte";
 	import PasswordDialog from "./lib/components/PasswordDialog.svelte";
 	import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
+	import SqlActionDialog from "./lib/components/SqlActionDialog.svelte";
+	import TableDesigner from "./lib/components/TableDesigner.svelte";
 	import { workspace } from "./lib/state/workspace.svelte";
 
 	const SIDE_KEY = "lowquery.sidebar.width";
@@ -129,6 +131,8 @@
 <UpdateDialog />
 <PasswordDialog />
 <ConfirmDialog />
+<SqlActionDialog />
+<TableDesigner />
 <Toaster />
 
 <style>

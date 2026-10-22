@@ -2,9 +2,6 @@
 	import {
 		IconButton,
 		Tooltip,
-		DropdownMenu,
-		DropdownMenuItem,
-		DropdownMenuSeparator,
 		AlertDialog,
 		ThemeToggle,
 		Spinner,
@@ -17,11 +14,7 @@
 		Plus,
 		Bot,
 		EllipsisVertical,
-		SquarePen,
-		Copy,
-		Trash2,
 		RefreshCw,
-		FilePlus2,
 		Database,
 		FolderTree,
 		Table2,
@@ -48,11 +41,13 @@
 	import { importer } from "../state/importer.svelte";
 	import { ai } from "../state/ai.svelte";
 	import EngineLogo from "./EngineLogo.svelte";
+	import TreeMenu from "./TreeMenu.svelte";
+	import { actions as act } from "../state/actions.svelte";
 	import { connectionSummary } from "../summary";
 	import { ENGINE_LABEL, emptyProfile, type ConnectionProfile } from "../api";
 	import { workspace } from "../state/workspace.svelte";
 	import { explorer, RELATION_KINDS, REDIS_KINDS, type SchemaNode, type ObjectNode } from "../state/explorer.svelte";
-	import { previewQuery, qualified, quoteIdent, redisArg, redisPreview } from "../sql/ident";
+	import { qualified, quoteIdent, redisArg } from "../sql/ident";
 
 	interface Props {
 		oninsert?: (text: string) => void;
@@ -60,8 +55,6 @@
 	}
 
 	let { oninsert, onnavigate }: Props = $props();
-
-	let confirmDelete = $state<ConnectionProfile | null>(null);
 
 	const KIND_ORDER = [
 		"table", "view", "matview", "foreign", "sequence", "function", "procedure", "package", "type", "synonym",
@@ -115,27 +108,13 @@
 		return [...map.entries()].sort((a, b) => KIND_ORDER.indexOf(a[0]) - KIND_ORDER.indexOf(b[0]));
 	}
 
-	/** Second line of a connection row: user@target, or the SQLite file name. */
 	function newQuery(p: ConnectionProfile) {
 		workspace.newTab(p.id);
 		onnavigate?.();
 	}
 
-	function duplicate(p: ConnectionProfile) {
-		workspace.editing = { ...$state.snapshot(p), id: "", name: `${p.name} (copy)` };
-	}
-
 	function preview(p: ConnectionProfile, schema: SchemaNode, obj: ObjectNode) {
-		if (p.engine === "redis") {
-			// A key in another database needs SELECT first; the tab session
-			// starts in the profile's database.
-			const command = redisPreview(obj.name, obj.kind);
-			const db = `db${p.database.trim() || "0"}`;
-			if (schema.name === db) workspace.openQuery(p.id, command);
-			else workspace.openQuery(p.id, `SELECT ${schema.name.replace(/^db/, "")}\n${command}`);
-		} else {
-			workspace.openQuery(p.id, previewQuery(schema.name, obj.name, p.engine));
-		}
+		act.preview(p, schema, obj);
 		onnavigate?.();
 	}
 
@@ -211,7 +190,7 @@
 			{#each workspace.profiles as p (p.id)}
 				{@const tree = explorer.tree(p.id)}
 				<li class="lq-tree__conn" style="--conn-color:{p.color ?? 'transparent'}">
-					<div class="lq-tree__row lq-tree__row--conn">
+					<div class="lq-tree__row lq-tree__row--conn" role="group" oncontextmenu={(e) => act.openMenu(e, { type: "connection", profile: p })}>
 						<button
 							type="button"
 							class="lq-tree__toggle"
@@ -238,34 +217,9 @@
 						{#if tree?.loading}
 							<Spinner size={14} label="Loading" />
 						{/if}
-						<DropdownMenu align="end">
-							{#snippet triggerChild(props)}
-								<IconButton {...props} size="sm" variant="text" aria-label="Actions for {p.name}">
-									<EllipsisVertical size={15} />
-								</IconButton>
-							{/snippet}
-							<DropdownMenuItem onclick={() => newQuery(p)}>
-								{#snippet icon()}<FilePlus2 size={15} />{/snippet}
-								New query
-							</DropdownMenuItem>
-							<DropdownMenuItem onclick={() => explorer.refresh(p)}>
-								{#snippet icon()}<RefreshCw size={15} />{/snippet}
-								Refresh schemas
-							</DropdownMenuItem>
-							<DropdownMenuSeparator />
-							<DropdownMenuItem onclick={() => (workspace.editing = $state.snapshot(p))}>
-								{#snippet icon()}<SquarePen size={15} />{/snippet}
-								Edit
-							</DropdownMenuItem>
-							<DropdownMenuItem onclick={() => duplicate(p)}>
-								{#snippet icon()}<Copy size={15} />{/snippet}
-								Duplicate
-							</DropdownMenuItem>
-							<DropdownMenuItem variant="destructive" onclick={() => (confirmDelete = p)}>
-								{#snippet icon()}<Trash2 size={15} />{/snippet}
-								Delete
-							</DropdownMenuItem>
-						</DropdownMenu>
+						<IconButton size="sm" variant="text" aria-label="Actions for {p.name}" onclick={(e) => act.openMenu(e, { type: "connection", profile: p })}>
+							<EllipsisVertical size={15} />
+						</IconButton>
 					</div>
 
 					{#if tree?.expanded}
@@ -276,13 +230,16 @@
 							<ul class="lq-tree__children" role="list">
 								{#each tree.schemas as s (s.name)}
 									<li>
-										<div class="lq-tree__row">
+										<div class="lq-tree__row lq-tree__row--node" role="group" oncontextmenu={(e) => act.openMenu(e, { type: "schema", profile: p, schema: s })}>
 											<button type="button" class="lq-tree__toggle" aria-expanded={s.expanded} onclick={() => explorer.toggleSchema(p.id, s)}>
 												<ChevronRight size={14} class="lq-tree__chev {s.expanded ? 'lq-tree__chev--open' : ''}" aria-hidden="true" />
 												<FolderTree size={14} aria-hidden="true" />
 												<span class="lq-tree__label" class:lq-tree__label--current={s.name === tree.currentSchema}>{s.name}</span>
 											</button>
 											{#if s.loading}<Spinner size={12} label="Loading" />{/if}
+											<button type="button" class="lq-tree__action" aria-label="Actions for {s.name}" title="Actions" onclick={(e) => act.openMenu(e, { type: "schema", profile: p, schema: s })}>
+												<EllipsisVertical size={13} />
+											</button>
 										</div>
 										{#if s.expanded && s.objects}
 											{#if s.objects.length === 0}
@@ -297,7 +254,7 @@
 													{#each items as o (o.kind + o.name)}
 														{@const Icon = KIND_ICON[o.kind as keyof typeof KIND_ICON] ?? Table2}
 														<li>
-															<div class="lq-tree__row lq-tree__row--obj">
+															<div class="lq-tree__row lq-tree__row--node" role="group" oncontextmenu={(e) => act.openMenu(e, { type: "object", profile: p, schema: s, obj: o })}>
 																<button
 																	type="button"
 																	class="lq-tree__toggle"
@@ -319,6 +276,9 @@
 																		<Play size={13} />
 																	</button>
 																{/if}
+																<button type="button" class="lq-tree__action" aria-label="Actions for {o.name}" title="Actions" onclick={(e) => act.openMenu(e, { type: "object", profile: p, schema: s, obj: o })}>
+																	<EllipsisVertical size={13} />
+																</button>
 															</div>
 															{#if o.expanded && o.columns}
 																<ul class="lq-tree__children lq-tree__cols" role="list">
@@ -377,7 +337,10 @@
 	</footer>
 </nav>
 
-{#if confirmDelete}
+<TreeMenu {oninsert} {onnavigate} />
+
+{#if act.deleting}
+	{@const confirmDelete = act.deleting}
 	<AlertDialog
 		open={true}
 		title="Delete {confirmDelete.name}?"
@@ -386,13 +349,11 @@
 		cancelLabel="Cancel"
 		destructive
 		onconfirm={async () => {
-			if (confirmDelete) {
-				await explorer.close(confirmDelete.id);
-				await workspace.deleteProfile(confirmDelete.id);
-			}
-			confirmDelete = null;
+			act.deleting = null;
+			await explorer.close(confirmDelete.id);
+			await workspace.deleteProfile(confirmDelete.id);
 		}}
-		oncancel={() => (confirmDelete = null)}
+		oncancel={() => (act.deleting = null)}
 	/>
 {/if}
 
@@ -598,7 +559,7 @@
 		cursor: pointer;
 		opacity: 0;
 	}
-	.lq-tree__row--obj:hover .lq-tree__action,
+	.lq-tree__row--node:hover .lq-tree__action,
 	.lq-tree__action:focus-visible {
 		opacity: 1;
 	}

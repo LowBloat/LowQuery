@@ -204,6 +204,8 @@ export interface DbColumn {
 	typeName: string;
 	nullable: boolean;
 	primaryKey: boolean;
+	/** Default as an SQL expression. */
+	defaultValue?: string | null;
 }
 
 export type ErrorKind =
@@ -305,4 +307,7 @@ export const api = {
 		invoke<ImportResult>("import_apply", { tool, path, keys, withPasswords }),
 	listColumns: (sessionId: string, schema: string, table: string) =>
 		invoke<DbColumn[]>("list_columns", { sessionId, schema, table }),
+	/** The statements that create the object, read from the database's catalog. */
+	objectDdl: (sessionId: string, schema: string, name: string, kind: string) =>
+		invoke<string>("object_ddl", { sessionId, schema, name, kind }),
 };
