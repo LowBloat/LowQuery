@@ -21,7 +21,7 @@
 	import { workspace, type QueryTab, type ResultSet } from "../state/workspace.svelte";
 	import { pendingCount } from "../state/edits";
 	import { cellsToTsv, toCsv, toJson } from "../export";
-	import { viewRows } from "../view";
+	import { viewOrder, viewRows } from "../view";
 
 	interface Props {
 		tab: QueryTab;
@@ -32,6 +32,13 @@
 	const current = $derived(tab.results.find((r) => r.id === tab.activeResult) ?? null);
 	const errors = $derived(tab.log.filter((l) => l.level === "error").length);
 	const pending = $derived(current ? pendingCount(current.edits) : 0);
+
+	// Rows passing the filters applied in memory (server filters already shape the rows).
+	const matching = $derived(
+		current && !current.serverView && current.view.filters.length > 0
+			? viewOrder(current.result.columns ?? [], current.result.rows, { ...current.view, sort: null }).length
+			: null,
+	);
 
 	let grids = $state<Record<string, ResultGrid | undefined>>({});
 
@@ -133,14 +140,15 @@
 						</Tooltip>
 					{/if}
 					<span class="lq-results__count">
+						{#if matching !== null}{matching.toLocaleString()} of{/if}
 						{current.result.rows.length.toLocaleString()}
 						{current.result.rows.length === 1 ? "row" : "rows"} · {current.result.elapsedMs} ms
 					</span>
 					{#if current.result.truncated}
 						<Tooltip
 							content="More rows available. Raise the limit to fetch more. {current.serverView
-								? 'Sorting runs the query again on the server.'
-								: 'Sorting covers the fetched rows only.'}"
+								? 'Sorting and filtering run the query again on the server.'
+								: 'Sorting and filtering cover the fetched rows only.'}"
 						>
 							<Chip label="Limit {tab.maxRows.toLocaleString()}" variant="warning" size="sm" />
 						</Tooltip>

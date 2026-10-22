@@ -4,6 +4,14 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- Result grid filters ([#4](https://github.com/LowBloat/LowQuery/issues/4)):
+  - A filter button in each column header (shown on hover, highlighted while the column is filtered): *contains* (any case), *equals*, *not equal to* (keeps NULLs), *is NULL*, *is not NULL*.
+  - Right-click on a column header: sort ascending or descending, clear sort, filter, show only NULL, hide NULL, clear the column's filter or all filters, copy the column name, fit the width to the values.
+  - Right-click on a cell: **Filter by this value** and **Exclude this value**.
+  - Active filters show as chips above the grid (click to change, × to remove, **Clear filters**), the row count shows how many rows match, and filters on several columns combine with AND.
+  - Like sorting, a result that fit within the row limit is filtered in memory, and one that hit the limit runs again on the server with a `WHERE` written in each database's SQL, so matching rows beyond the limit are found.
+
 ### Fixed
 - Result grid: sorting by a column of a result that hit the row limit only reordered the fetched rows, so the first rows of the whole result never showed up. Such a result now runs again on the server ordered by that column (the statement goes inside `SELECT * FROM (...) ORDER BY <position>`); a result that fit within the limit still sorts in memory. The result stays editable, unsaved edits ask first, an open PostgreSQL transaction is protected by a savepoint, and if the database rejects the sorted query the grid sorts the fetched rows and says why in Messages. Copy and CSV/JSON export follow the order shown. ([#3](https://github.com/LowBloat/LowQuery/issues/3))
 

@@ -3,20 +3,29 @@
 	import {
 		Dialog,
 		Button,
+		Chip,
 		CopyButton,
 		DropdownMenu,
 		DropdownMenuItem,
 		DropdownMenuSeparator,
+		Select,
 		TextArea,
+		TextField,
 		toast,
 	} from "@codeatlasdev/ui";
 	import {
 		ArrowDown,
 		ArrowUp,
+		ArrowUpDown,
+		Ban,
 		CircleSlash,
 		Copy,
 		CopyPlus,
 		Eye,
+		Funnel,
+		FunnelPlus,
+		FunnelX,
+		MoveHorizontal,
 		Pencil,
 		Plus,
 		RotateCcw,
@@ -38,7 +47,19 @@
 		toggleDelete,
 		type EditMap,
 	} from "../state/edits";
-	import { emptyView, nextSort, viewOrder, type ResultView } from "../view";
+	import {
+		FILTER_OPS,
+		describeFilter,
+		emptyView,
+		nextSort,
+		opNeedsValue,
+		viewOrder,
+		withFilter,
+		withoutFilter,
+		type ColumnFilter,
+		type FilterOp,
+		type ResultView,
+	} from "../view";
 
 	interface Props {
 		columns: ColumnInfo[];
@@ -48,9 +69,9 @@
 		editable?: EditTarget | null;
 		edits?: EditMap;
 		onsave?: () => void;
-		/** Sort shown in the grid. */
+		/** Sort and filters shown in the grid. */
 		view?: ResultView;
-		/** Apply `view` to `rows` here; false when the rows already come sorted from the server. */
+		/** Apply `view` to `rows` here; false when the rows already come sorted and filtered from the server. */
 		localView?: boolean;
 		onview?: (view: ResultView) => void;
 		/** A query for this result is running: the header shows it and ignores clicks. */
@@ -108,6 +129,9 @@
 	} | null>(null);
 	let viewerText = $state("");
 	let menu = $state<{ x: number; y: number; row: number; col: number } | null>(null);
+	let headMenu = $state<{ x: number; y: number; col: number } | null>(null);
+	let filterEdit = $state<{ col: number; op: FilterOp; value: string } | null>(null);
+	let filterInput = $state<HTMLInputElement | null>(null);
 
 	// Indexes of the result rows in display order (in memory, no new query).
 	const order = $derived(localView ? viewOrder(columns, rows, view) : rows.map((_, i) => i));
@@ -141,7 +165,8 @@
 		widths = columns.map((c, ci) => {
 			if (!ctx) return 160;
 			ctx.font = `600 13px ${sans}`;
-			let w = ctx.measureText(c.name).width + 34;
+			// Room for the sort arrow and the filter button.
+			let w = ctx.measureText(c.name).width + 52;
 			ctx.font = `11px ${sans}`;
 			w = Math.max(w, ctx.measureText(c.typeName).width + 20);
 			ctx.font = `13px ${mono}`;
@@ -180,11 +205,60 @@
 		return () => ro.disconnect();
 	});
 
-	function toggleSort(col: number) {
+	function setView(next: ResultView) {
 		if (busy) return;
 		commitEdit();
-		onview?.({ ...view, sort: nextSort(sort, col) });
+		onview?.(next);
 	}
+
+	function toggleSort(col: number) {
+		setView({ ...view, sort: nextSort(sort, col) });
+	}
+
+	function sortBy(col: number, dir: 1 | -1 | null) {
+		setView({ ...view, sort: dir ? { col, dir } : null });
+	}
+
+	// ---- filters ---------------------------------------------------------------
+
+	const filterOf = (col: number) => view.filters.find((f) => f.col === col);
+
+	function applyFilter(f: ColumnFilter) {
+		setView(withFilter(view, f));
+	}
+
+	function clearFilter(col?: number) {
+		setView(withoutFilter(view, col));
+	}
+
+	function openFilter(col: number) {
+		const f = filterOf(col);
+		filterEdit = { col, op: f?.op ?? "contains", value: f?.value ?? "" };
+	}
+
+	function submitFilter() {
+		const e = filterEdit;
+		if (!e) return;
+		filterEdit = null;
+		viewport.focus();
+		// Containing nothing matches everything: the same as no filter.
+		if (e.op === "contains" && e.value === "") {
+			if (filterOf(e.col)) clearFilter(e.col);
+			return;
+		}
+		applyFilter({ col: e.col, op: e.op, value: opNeedsValue(e.op) ? e.value : "" });
+	}
+
+	function filterByValue(row: number, col: number, exclude: boolean) {
+		const v = valueAt(row, col);
+		if (v === null) applyFilter({ col, op: exclude ? "notnull" : "null", value: "" });
+		else applyFilter({ col, op: exclude ? "ne" : "eq", value: v });
+	}
+
+	$effect(() => {
+		const el = filterInput;
+		if (el) requestAnimationFrame(() => el.select());
+	});
 
 	// Column resize by dragging the header edge.
 	function startResize(e: PointerEvent, col: number) {
@@ -461,6 +535,12 @@
 		moveTo(row, col);
 	}
 
+	function onheadmenu(e: MouseEvent, col: number) {
+		e.preventDefault();
+		commitEdit();
+		headMenu = { x: e.clientX, y: e.clientY, col };
+	}
+
 	function oncontextmenu(e: MouseEvent, row: number, col: number) {
 		e.preventDefault();
 		commitEdit();
@@ -473,6 +553,26 @@
 	}
 </script>
 
+<div class="lq-gridbox">
+{#if view.filters.length > 0}
+	<div class="lq-filters" role="toolbar" aria-label="Filters">
+		<span class="lq-filters__icon" aria-hidden="true"><Funnel size={13} /></span>
+		{#each view.filters as f (f.col)}
+			<Chip
+				size="sm"
+				variant="brand"
+				label={describeFilter(f, columns)}
+				deletable
+				ondelete={() => clearFilter(f.col)}
+				onclick={() => openFilter(f.col)}
+			/>
+		{/each}
+		<Button size="sm" variant="ghost" disabled={busy} onclick={() => clearFilter()}>
+			{#snippet leading()}<FunnelX size={14} />{/snippet}
+			Clear filters
+		</Button>
+	</div>
+{/if}
 <div
 	class="lq-grid"
 	class:lq-grid--busy={busy}
@@ -491,12 +591,16 @@
 			<div class="lq-grid__corner" role="columnheader">#</div>
 			{#each columns as c, ci (ci)}
 				{@const readOnly = !!editable && editable.columns[ci] == null}
+				{@const filter = filterOf(ci)}
 				<div
 					class="lq-grid__th"
 					class:lq-grid__th--num={c.kind === "number"}
 					class:lq-grid__th--ro={readOnly}
+					class:lq-grid__th--filtered={!!filter}
 					role="columnheader"
+					tabindex="-1"
 					aria-sort={sort?.col === ci ? (sort.dir === 1 ? "ascending" : "descending") : "none"}
+					oncontextmenu={(e) => onheadmenu(e, ci)}
 				>
 					<button
 						class="lq-grid__th-btn"
@@ -509,6 +613,16 @@
 						{#if sort?.col === ci}
 							{#if sort.dir === 1}<ArrowUp size={12} aria-hidden="true" />{:else}<ArrowDown size={12} aria-hidden="true" />{/if}
 						{/if}
+					</button>
+					<button
+						class="lq-grid__th-filter"
+						type="button"
+						aria-label="Filter {c.name}"
+						aria-pressed={!!filter}
+						title={filter ? `Filter: ${describeFilter(filter, columns)}` : `Filter ${c.name}`}
+						onclick={() => openFilter(ci)}
+					>
+						<Funnel size={12} aria-hidden="true" />
 					</button>
 					<span
 						class="lq-grid__resize"
@@ -582,7 +696,72 @@
 			</div>
 		{/each}
 	</div>
+	{#if display.length === 0 && view.filters.length > 0}
+		<p class="lq-grid__empty">No rows match the filters.</p>
+	{/if}
 </div>
+</div>
+
+{#if headMenu}
+	{@const h = headMenu}
+	{@const f = filterOf(h.col)}
+	<DropdownMenu
+		open={true}
+		anchor={{ x: h.x, y: h.y }}
+		onOpenChange={(o) => {
+			if (!o) headMenu = null;
+		}}
+	>
+		<DropdownMenuItem onclick={() => sortBy(h.col, 1)}>
+			{#snippet icon()}<ArrowUp size={15} />{/snippet}
+			Sort ascending
+		</DropdownMenuItem>
+		<DropdownMenuItem onclick={() => sortBy(h.col, -1)}>
+			{#snippet icon()}<ArrowDown size={15} />{/snippet}
+			Sort descending
+		</DropdownMenuItem>
+		{#if sort}
+			<DropdownMenuItem onclick={() => sortBy(h.col, null)}>
+				{#snippet icon()}<ArrowUpDown size={15} />{/snippet}
+				Clear sort
+			</DropdownMenuItem>
+		{/if}
+		<DropdownMenuSeparator />
+		<DropdownMenuItem onclick={() => openFilter(h.col)}>
+			{#snippet icon()}<Funnel size={15} />{/snippet}
+			Filter…
+		</DropdownMenuItem>
+		<DropdownMenuItem onclick={() => applyFilter({ col: h.col, op: "null", value: "" })}>
+			{#snippet icon()}<CircleSlash size={15} />{/snippet}
+			Show only NULL
+		</DropdownMenuItem>
+		<DropdownMenuItem onclick={() => applyFilter({ col: h.col, op: "notnull", value: "" })}>
+			{#snippet icon()}<Ban size={15} />{/snippet}
+			Hide NULL
+		</DropdownMenuItem>
+		{#if f}
+			<DropdownMenuItem onclick={() => clearFilter(h.col)}>
+				{#snippet icon()}<FunnelX size={15} />{/snippet}
+				Clear filter on {columns[h.col].name}
+			</DropdownMenuItem>
+		{/if}
+		{#if view.filters.length > (f ? 1 : 0)}
+			<DropdownMenuItem onclick={() => clearFilter()}>
+				{#snippet icon()}<FunnelX size={15} />{/snippet}
+				Clear all filters
+			</DropdownMenuItem>
+		{/if}
+		<DropdownMenuSeparator />
+		<DropdownMenuItem onclick={() => copy(columns[h.col].name, "Column name")}>
+			{#snippet icon()}<Table2 size={15} />{/snippet}
+			Copy column name
+		</DropdownMenuItem>
+		<DropdownMenuItem onclick={() => autoFit(h.col)}>
+			{#snippet icon()}<MoveHorizontal size={15} />{/snippet}
+			Fit width to values
+		</DropdownMenuItem>
+	</DropdownMenu>
+{/if}
 
 {#if menu}
 	{@const m = menu}
@@ -625,6 +804,21 @@
 			Copy column name
 		</DropdownMenuItem>
 		<DropdownMenuSeparator />
+		<DropdownMenuItem onclick={() => filterByValue(m.row, m.col, false)}>
+			{#snippet icon()}<FunnelPlus size={15} />{/snippet}
+			Filter by this value
+		</DropdownMenuItem>
+		<DropdownMenuItem onclick={() => filterByValue(m.row, m.col, true)}>
+			{#snippet icon()}<Ban size={15} />{/snippet}
+			Exclude this value
+		</DropdownMenuItem>
+		{#if filterOf(m.col)}
+			<DropdownMenuItem onclick={() => clearFilter(m.col)}>
+				{#snippet icon()}<FunnelX size={15} />{/snippet}
+				Clear filter on {columns[m.col].name}
+			</DropdownMenuItem>
+		{/if}
+		<DropdownMenuSeparator />
 		<DropdownMenuItem onclick={() => openViewer(m.row, m.col)}>
 			{#snippet icon()}<Eye size={15} />{/snippet}
 			View full value
@@ -658,6 +852,69 @@
 			{/if}
 		{/if}
 	</DropdownMenu>
+{/if}
+
+{#if filterEdit}
+	{@const fe = filterEdit}
+	{@const fc = columns[fe.col]}
+	<Dialog
+		open={true}
+		title="Filter {fc.name}"
+		description={fc.typeName}
+		size="sm"
+		onOpenChange={(o) => {
+			if (!o) filterEdit = null;
+		}}
+	>
+		<!-- svelte-ignore a11y_no_static_element_interactions -->
+		<div
+			class="lq-filter-form"
+			onkeydown={(e) => {
+				if (e.key === "Enter" && e.target instanceof HTMLInputElement) {
+					e.preventDefault();
+					submitFilter();
+				}
+			}}
+		>
+			<Select
+				label="Condition"
+				size="sm"
+				options={FILTER_OPS}
+				value={fe.op}
+				onchange={(v) => {
+					if (filterEdit) filterEdit.op = v as FilterOp;
+				}}
+			/>
+			{#if opNeedsValue(fe.op)}
+				<TextField
+					label="Value"
+					size="sm"
+					spellcheck="false"
+					autocomplete="off"
+					placeholder={fe.op === "contains" ? "Text to find (any case)" : "Exact value"}
+					bind:ref={filterInput}
+					bind:value={fe.value}
+				/>
+			{/if}
+		</div>
+		{#snippet actions()}
+			{#if filterEdit && filterOf(filterEdit.col)}
+				<Button
+					variant="ghost"
+					onclick={() => {
+						const col = filterEdit?.col;
+						filterEdit = null;
+						clearFilter(col);
+					}}
+				>
+					{#snippet leading()}<FunnelX size={14} />{/snippet}
+					Remove filter
+				</Button>
+			{/if}
+			<Button variant="outlined" onclick={() => (filterEdit = null)}>Cancel</Button>
+			<Button variant="filled" onclick={submitFilter}>Apply</Button>
+		{/snippet}
+	</Dialog>
 {/if}
 
 {#if viewer}
@@ -700,8 +957,28 @@
 {/if}
 
 <style>
+	.lq-gridbox {
+		display: flex;
+		flex-direction: column;
+		height: 100%;
+		min-height: 0;
+	}
+	.lq-filters {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: 6px;
+		padding: 6px 8px;
+		border-bottom: 1px solid var(--ca-outline-subtle);
+		background: var(--ca-surface-sunken);
+	}
+	.lq-filters__icon {
+		display: inline-flex;
+		color: var(--ca-text-hint);
+	}
 	.lq-grid {
 		position: relative;
+		flex: 1;
 		height: 100%;
 		min-height: 0;
 		overflow: auto;
@@ -762,6 +1039,55 @@
 		min-width: 0;
 		border-right: 1px solid var(--ca-outline-subtle);
 	}
+	.lq-grid__th-filter {
+		position: absolute;
+		top: 50%;
+		right: 6px;
+		z-index: 1;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 20px;
+		height: 20px;
+		padding: 0;
+		border: 0;
+		background: transparent;
+		color: var(--ca-text-hint);
+		opacity: 0;
+		cursor: pointer;
+		transform: translateY(-50%);
+	}
+	.lq-grid__th:hover .lq-grid__th-filter,
+	.lq-grid__th-filter:focus-visible,
+	.lq-grid__th--filtered .lq-grid__th-filter {
+		opacity: 1;
+	}
+	.lq-grid__th-filter:hover {
+		background: var(--ca-action-hover);
+		color: var(--ca-text-primary);
+	}
+	.lq-grid__th-filter:focus-visible {
+		outline: 2px solid var(--ca-focus-ring);
+		outline-offset: -2px;
+	}
+	.lq-grid__th--filtered .lq-grid__th-filter,
+	.lq-grid__th--filtered .lq-grid__th-name {
+		color: var(--ca-brand-text, var(--ca-state-indicator));
+	}
+	.lq-grid__empty {
+		position: sticky;
+		left: 0;
+		margin: 0;
+		padding: 16px;
+		color: var(--ca-text-hint);
+		font-family: var(--ca-font-sans);
+		font-size: 13px;
+	}
+	.lq-filter-form {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+	}
 	.lq-grid__th-btn {
 		display: grid;
 		grid-template-columns: minmax(0, 1fr) auto;
@@ -770,7 +1096,7 @@
 		column-gap: 4px;
 		width: 100%;
 		height: 100%;
-		padding: 2px 10px 2px 8px;
+		padding: 2px 30px 2px 8px;
 		border: 0;
 		background: transparent;
 		color: var(--ca-text-primary);

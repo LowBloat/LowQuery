@@ -152,6 +152,43 @@ function execute(sql: string, maxRows: number): ExecResult {
 		let rows = CUSTOMERS;
 		if (/\bwhere\s+active\b/.test(s)) rows = rows.filter((r) => r[6] === "true");
 		if (/\border\s+by\s+balance\s+desc\b/.test(s)) rows = [...rows].sort((a, b) => Number(b[4]) - Number(a[4]));
+		// Filters from the result grid, as `viewSql` writes them for PostgreSQL.
+		const where = /\)\s*lq_view\s+where\s+([\s\S]*?)(?:\s+order\s+by\b|$)/i.exec(sql);
+		if (where) {
+			const names = ["id", "name", "email", "city", "balance", "created_at", "active"];
+			const unquote = (v: string) => v.replaceAll("''", "'");
+			const tests = where[1].split(/\s+AND\s+/i).map((cond): ((r: (string | null)[]) => boolean) => {
+				let m = /^\("(\w+)" IS NULL OR NOT \((.*)\)\)$/.exec(cond);
+				if (m) {
+					const inner = m[2];
+					const col = names.indexOf(m[1]);
+					const eq = /= '(.*)'$/.exec(inner) ?? /= (\S+)$/.exec(inner);
+					return (r) => r[col] === null || (eq ? Number.isNaN(Number(eq[1])) ? r[col] !== unquote(eq[1]) : Number(r[col]) !== Number(eq[1]) : true);
+				}
+				if ((m = /^"(\w+)" IS (NOT )?NULL$/.exec(cond))) {
+					const col = names.indexOf(m[1]);
+					const not = !!m[2];
+					return (r) => (r[col] === null) !== not;
+				}
+				if ((m = /^STRPOS\(LOWER\(CAST\("(\w+)" AS TEXT\)\), LOWER\('(.*)'\)\) > 0$/.exec(cond))) {
+					const col = names.indexOf(m[1]);
+					const needle = unquote(m[2]).toLowerCase();
+					return (r) => r[col] !== null && r[col]!.toLowerCase().includes(needle);
+				}
+				if ((m = /^CAST\("(\w+)" AS TEXT\) = '(.*)'$/.exec(cond))) {
+					const col = names.indexOf(m[1]);
+					const value = unquote(m[2]);
+					return (r) => r[col] === value;
+				}
+				if ((m = /^"(\w+)" = (\S+)$/.exec(cond))) {
+					const col = names.indexOf(m[1]);
+					const value = Number(m[2]);
+					return (r) => r[col] !== null && Number(r[col]) === value;
+				}
+				return () => true;
+			});
+			rows = rows.filter((r) => tests.every((t) => t(r)));
+		}
 		// Sort from the result grid: `SELECT * FROM (...) lq_view ORDER BY <n> ASC|DESC`.
 		const sorted = /\)\s*lq_view\s+order\s+by\s+(\d+)\s+(asc|desc)/.exec(s);
 		if (sorted) {

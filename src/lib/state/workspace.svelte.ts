@@ -20,11 +20,11 @@ export interface ResultSet {
 	result: ExecResult;
 	/** Unsaved grid edits; only for results with `result.editable`. */
 	edits: EditMap;
-	/** Sort shown in the grid. */
+	/** Sort and filters shown in the grid. */
 	view: ResultView;
 	/**
-	 * The view runs on the server: the query hit the row limit, so sorting
-	 * the fetched rows would leave the others out. Otherwise the grid applies
+	 * The view runs on the server: the query hit the row limit, so sorting or
+	 * filtering the fetched rows would leave the others out. Otherwise the grid applies
 	 * the view in memory.
 	 */
 	serverView: boolean;
@@ -547,9 +547,9 @@ export class Workspace {
 	}
 
 	/**
-	 * Sorts a result. In memory when every row is loaded; otherwise the query
-	 * runs again with the sort around it. If the database rejects that query,
-	 * the grid sorts the fetched rows and the log says why.
+	 * Sorts and filters a result. In memory when every row is loaded;
+	 * otherwise the query runs again with the view around it. If the database
+	 * rejects that query, the grid works on the fetched rows and the log says why.
 	 */
 	async setView(tab: QueryTab, rs: ResultSet, view: ResultView) {
 		if (!rs.serverView) {
@@ -562,12 +562,12 @@ export class Workspace {
 			rs.serverView = false;
 			rs.view = view;
 			const n = rs.result.rows.length.toLocaleString();
-			tab.addLog("notice", `${reason} The grid sorts the ${n} fetched rows only.`, { sql });
-			toast.warning(`Sorted the ${n} fetched rows only. See Messages.`);
+			tab.addLog("notice", `${reason.replace(/\.?$/, ".")} The grid sorts and filters the ${n} fetched rows only.`, { sql });
+			toast.warning(`Sorting and filtering cover the ${n} fetched rows only. See Messages.`);
 		};
 		const profile = this.profile(tab.profileId);
 		if (!tab.session || !profile) {
-			local("The connection is closed, so the query could not run again sorted.");
+			local("The connection is closed, so the query could not run again with the sort and filters.");
 			return;
 		}
 		const n = pendingCount(rs.edits);
@@ -575,7 +575,7 @@ export class Workspace {
 			n > 0 &&
 			!(await this.confirm.ask({
 				title: "Discard unsaved changes?",
-				message: `Sorting runs the query again. ${n} ${n === 1 ? "row has" : "rows have"} unsaved changes in this result.`,
+				message: `Sorting or filtering runs the query again. ${n} ${n === 1 ? "row has" : "rows have"} unsaved changes in this result.`,
 				confirmLabel: "Discard changes",
 				destructive: true,
 			}))
@@ -583,7 +583,7 @@ export class Workspace {
 			return;
 
 		const dialect = engineInfo(profile.engine).dialect;
-		const sql = viewSql(rs.sql, view, dialect);
+		const sql = viewSql(rs.sql, view, columns, dialect);
 		const sessionId = tab.session.sessionId;
 		// A failed statement aborts an open PostgreSQL transaction; a savepoint keeps it usable.
 		const savepoint = dialect === "postgres" && tab.inTransaction;
@@ -607,7 +607,7 @@ export class Workspace {
 			const count = result.rows.length;
 			tab.addLog(
 				"success",
-				`Sorted on the server (${describeView(columns, view)}): ${count.toLocaleString()} ${count === 1 ? "row" : "rows"}${result.truncated ? " (limit reached)" : ""}`,
+				`Ran on the server (${describeView(columns, view)}): ${count.toLocaleString()} ${count === 1 ? "row" : "rows"}${result.truncated ? " (limit reached)" : ""}`,
 				{ sql, elapsedMs: result.elapsedMs },
 			);
 		} catch (e) {
@@ -616,8 +616,8 @@ export class Workspace {
 				tab.session = null;
 				tab.inTransaction = false;
 			}
-			if (err.kind === "cancelled") tab.addLog("notice", "Sorting cancelled.", { sql });
-			else local(`The database could not sort the query: ${err.message}`, sql);
+			if (err.kind === "cancelled") tab.addLog("notice", "Sorting and filtering cancelled.", { sql });
+			else local(`The database could not run the query sorted and filtered: ${err.message}`, sql);
 		} finally {
 			tab.running = false;
 			tab.cancelling = false;
