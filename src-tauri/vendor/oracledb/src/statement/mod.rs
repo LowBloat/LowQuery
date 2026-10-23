@@ -374,9 +374,17 @@ impl CachedStatement {
         if num_columns > 0 {
             resp.read_u8()?;
         }
-        self.out_metadata.clear();
-        for _ in 0..num_columns {
+        // LowQuery patch: on a cursor that already ran, the columns described
+        // before tell whether it has a define for its LOB columns.
+        let mut previous = std::mem::take(&mut self.out_metadata);
+        if !self.has_cursor() {
+            previous.clear();
+        }
+        for i in 0..num_columns {
             let mut metadata = Metadata::from_response(resp, client)?;
+            if let Some(previous) = previous.get(i as usize) {
+                metadata.adjust_for_previous(previous);
+            }
             if metadata.requires_define() {
                 self.requires_define = true;
                 self.no_prefetch = true;

@@ -84,6 +84,42 @@ impl Metadata {
         }
     }
 
+    /// LowQuery patch, from python-oracledb's `_adjust_metadata`: when a
+    /// query runs again and the server describes it again (after parsing it
+    /// anew), a CLOB or BLOB column whose cursor already has a define as
+    /// string/bytes is still returned as LONG/LONG RAW, so it gets the same
+    /// metadata as `define_metadata` and needs no new define.
+    pub(crate) fn adjust_for_previous(&mut self, previous: &Metadata) {
+        let previous_type = previous.db_type.ora_type_num;
+        match self.db_type.ora_type_num {
+            constants::ORA_TYPE_NUM_CLOB
+                if matches!(
+                    previous_type,
+                    constants::ORA_TYPE_NUM_CHAR
+                        | constants::ORA_TYPE_NUM_LONG
+                        | constants::ORA_TYPE_NUM_VARCHAR
+                ) =>
+            {
+                self.db_type = DbType::from_ora_type_and_csfrm(
+                    constants::ORA_TYPE_NUM_LONG,
+                    previous.db_type.csfrm,
+                );
+                self.max_size = 0;
+            }
+            constants::ORA_TYPE_NUM_BLOB
+                if matches!(
+                    previous_type,
+                    constants::ORA_TYPE_NUM_RAW
+                        | constants::ORA_TYPE_NUM_LONG_RAW
+                ) =>
+            {
+                self.db_type = crate::DB_TYPE_LONG_RAW;
+                self.max_size = 0;
+            }
+            _ => {}
+        }
+    }
+
     /// Returns a new structure suitable for defining CLOB/BLOB as
     /// string/bytes.
     pub(crate) fn define_metadata(&self) -> Metadata {
