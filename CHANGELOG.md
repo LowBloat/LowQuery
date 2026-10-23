@@ -4,6 +4,8 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-10-23
+
 ### Added
 - **Export…** on tables, views, other objects and schemas ([#10](https://github.com/LowBloat/LowQuery/issues/10), [#11](https://github.com/LowBloat/LowQuery/issues/11), [#13](https://github.com/LowBloat/LowQuery/issues/13)): pick SQL, CSV, CSV for Excel or JSON (and for SQL: structure and data, structure, or data) and where to save. Nothing else to set.
   - SQL scripts recreate the objects on the same kind of database: structure read from the database's catalog, tables in foreign key order, and INSERTs that keep every value exact (binary, dates with time zones, long text, JSON), skip generated columns and keep identity values (`OVERRIDING SYSTEM VALUE` and `setval`, `IDENTITY_INSERT`, `START WITH LIMIT VALUE`).
@@ -147,7 +149,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/LowBloat/LowQuery/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LowBloat/LowQuery/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/LowBloat/LowQuery/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/LowBloat/LowQuery/compare/v0.3.2...v0.4.0
