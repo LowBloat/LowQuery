@@ -415,6 +415,142 @@ async fn oracle_wide_rows_with_repeated_values() {
     }
 }
 
+/// Queries returning CLOBs run again and again in one session, through the
+/// driver's statement cache. LOBs are fetched as text, which takes a define
+/// round trip on the first run. ORA-01002 (fetch out of sequence) followed
+/// when that run failed, and when the server parsed and described the query
+/// again on a later run.
+#[tokio::test]
+#[ignore]
+async fn oracle_clob_queries_run_repeatedly() {
+    let Some((profile, pw)) = ora_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    let schema = profile.user.to_uppercase();
+    let _ = s.execute(&req("drop table lq_clob purge", 0)).await;
+    s.execute(&req(
+        "create table lq_clob (id number primary key, doc clob)",
+        0,
+    ))
+    .await
+    .unwrap();
+    // Values longer than 4000 characters, which no VARCHAR2 define can hold.
+    s.execute(&req(
+        "insert into lq_clob
+         select level, to_clob(rpad('a', 4000, 'a')) || rpad('b', 4000, 'b') || level
+         from dual connect by level <= 3",
+        0,
+    ))
+    .await
+    .unwrap();
+    s.execute(&req("commit", 0)).await.unwrap();
+
+    let long_doc = |id: usize| format!("{}{}{id}", "a".repeat(4000), "b".repeat(4000));
+    type Check = Box<dyn Fn(&[Vec<Option<String>>])>;
+    let queries: [(&str, Check); 4] = [
+        (
+            "select dbms_metadata.get_ddl('TABLE', 'LQ_CLOB') from dual",
+            Box::new(|rows| {
+                assert_eq!(rows.len(), 1);
+                let ddl = rows[0][0].as_deref().unwrap_or_default();
+                assert!(
+                    ddl.contains("CREATE TABLE") && ddl.contains("LQ_CLOB"),
+                    "{ddl}"
+                );
+            }),
+        ),
+        (
+            "select to_clob('LowQuery ' || level) from dual connect by level <= 3",
+            Box::new(|rows| {
+                let got: Vec<_> = rows.iter().map(|r| r[0].clone()).collect();
+                let want: Vec<_> = (1..=3).map(|i| Some(format!("LowQuery {i}"))).collect();
+                assert_eq!(got, want);
+            }),
+        ),
+        (
+            "select id, doc from lq_clob order by id",
+            Box::new(move |rows| {
+                assert_eq!(rows.len(), 3);
+                for (i, row) in rows.iter().enumerate() {
+                    assert_eq!(row[0].as_deref(), Some((i + 1).to_string().as_str()));
+                    assert_eq!(row[1].as_deref(), Some(long_doc(i + 1).as_str()));
+                }
+            }),
+        ),
+        // The first row only: the cursor is left open with rows to fetch.
+        (
+            "select doc from lq_clob order by id",
+            Box::new(move |rows| {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0].as_deref(), Some(long_doc(1).as_str()));
+            }),
+        ),
+    ];
+    // New statistics invalidate the cursors on LQ_CLOB, as statistics
+    // feedback does on its own: the next run parses the query again and the
+    // server describes its columns again, as CLOB.
+    let invalidate =
+        "begin dbms_stats.gather_table_stats(user, 'LQ_CLOB', no_invalidate => false); end;";
+    for (n, (sql, check)) in queries.iter().enumerate() {
+        let limit = if n == 3 { 1 } else { 100 };
+        for run in 1..=5 {
+            if run == 3 {
+                s.execute(&req(invalidate, 0)).await.unwrap();
+            }
+            let r = s
+                .execute(&req(sql, limit))
+                .await
+                .unwrap_or_else(|e| panic!("{sql}: run {run}: {e}"));
+            check(&r.rows);
+        }
+    }
+    // A query that fails while its LOB column is defined (ORA-01476 here),
+    // then succeeds once the data changes.
+    let _ = s.execute(&req("drop table lq_clob_flag purge", 0)).await;
+    s.execute(&req("create table lq_clob_flag (n number)", 0))
+        .await
+        .unwrap();
+    s.execute(&req("insert into lq_clob_flag values (0)", 0))
+        .await
+        .unwrap();
+    s.execute(&req("commit", 0)).await.unwrap();
+    let flagged = "select to_clob('n=' || (select 1 / n from lq_clob_flag)) from dual";
+    for run in 1..=2 {
+        let err = s.execute(&req(flagged, 100)).await.unwrap_err();
+        assert!(err.to_string().contains("ORA-01476"), "run {run}: {err}");
+    }
+    s.execute(&req("update lq_clob_flag set n = 1", 0))
+        .await
+        .unwrap();
+    s.execute(&req("commit", 0)).await.unwrap();
+    for _ in 3..=5 {
+        assert_eq!(one_row(&s, flagged).await[0].as_deref(), Some("n=1"));
+    }
+    s.execute(&req("drop table lq_clob_flag purge", 0))
+        .await
+        .unwrap();
+    // Show DDL reads DBMS_METADATA with binds, five times in a row; the
+    // table has no comments, so one of its queries fails every time.
+    for run in 1..=5 {
+        let ddl = s
+            .object_ddl(&schema, "LQ_CLOB", "table")
+            .await
+            .unwrap_or_else(|e| panic!("Show DDL run {run}: {e}"));
+        assert!(ddl.contains("LQ_CLOB"), "{ddl}");
+    }
+    // The session is still usable afterwards.
+    assert_eq!(
+        one_row(&s, "select count(*) from lq_clob").await[0].as_deref(),
+        Some("3")
+    );
+    s.execute(&req("drop table lq_clob purge", 0))
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 #[ignore]
 async fn oracle_connects_through_tns_alias() {
