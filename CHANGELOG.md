@@ -4,6 +4,9 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+- Oracle: after a query returning a CLOB or BLOB failed (for example `dbms_metadata.get_ddl` raising an error while its rows were fetched), running the same SQL again in the session failed with ORA-01002 (fetch out of sequence) until the session was reconnected ([#17](https://github.com/LowBloat/LowQuery/issues/17)). The statement now runs normally again. Show DDL no longer needs to bypass the statement cache to avoid this.
+
 ## [0.5.1] - 2026-10-22
 
 ### Security

@@ -131,6 +131,13 @@ impl StatementCache {
         !self.empty_slots.is_empty() || !self.free_used_slots.is_empty()
     }
 
+    /// Forgets the database cursor of a statement and closes it on the next
+    /// round trip (LowQuery patch).
+    pub(crate) fn clear_cursor(&mut self, info: &mut CachedStatement) {
+        self.close_cursor(info);
+        info.clear_cursor();
+    }
+
     /// Returns whether the statement cache has cursors that need to be closed.
     pub(crate) fn has_cursors_to_close(&self) -> bool {
         !self.cursors_to_close.is_empty()

@@ -743,11 +743,21 @@ impl Client {
         } else {
             let mut message =
                 ExecuteMessage::new(statement, params, parse_only);
-            let mut response = self.process_message(&mut message)?;
-            response.finalize_rows(client_ref, statement.out_metadata());
+            let result = self.process_message(&mut message);
+            // LowQuery patch: when the execution fails before or during the
+            // define of LOB columns, the cursor is left in an unknown state
+            // (not executed, or without its define); it is closed so the next
+            // execution parses the statement again. Otherwise that execution
+            // would perform a define only, then fetch from a cursor that was
+            // never executed (ORA-01002: fetch out of sequence).
             if statement.requires_define() {
+                if result.is_err() {
+                    self.statement_cache.clear_cursor(statement);
+                }
                 statement.clear_requires_define();
             }
+            let mut response = result?;
+            response.finalize_rows(client_ref, statement.out_metadata());
             Ok(response)
         }
     }

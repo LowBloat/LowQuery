@@ -580,9 +580,7 @@ impl OraSession {
     }
 }
 
-/// First column of every row, as text. The statement stays out of the
-/// driver's cache: on 23ai, running a cached DBMS_METADATA query a third time
-/// in a session fails with ORA-01002 (fetch out of sequence).
+/// First column of every row, as text.
 fn first_texts(conn: &Connection, sql: &str, params: &[String]) -> AppResult<Vec<String>> {
     let binds: Vec<&dyn oracledb::ToDbValue> = params
         .iter()
@@ -591,7 +589,6 @@ fn first_texts(conn: &Connection, sql: &str, params: &[String]) -> AppResult<Vec
     let cursor = conn
         .statement(sql)
         .map_err(map_error)?
-        .exclude_from_cache()
         .build()
         .map_err(map_error)?
         .query(&binds)
