@@ -4,7 +4,16 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- **Export…** on tables, views, other objects and schemas ([#10](https://github.com/LowBloat/LowQuery/issues/10), [#11](https://github.com/LowBloat/LowQuery/issues/11), [#13](https://github.com/LowBloat/LowQuery/issues/13)): pick SQL, CSV, CSV for Excel or JSON (and for SQL: structure and data, structure, or data) and where to save. Nothing else to set.
+  - SQL scripts recreate the objects on the same kind of database: structure read from the database's catalog, tables in foreign key order, and INSERTs that keep every value exact (binary, dates with time zones, long text, JSON), skip generated columns and keep identity values (`OVERRIDING SYSTEM VALUE` and `setval`, `IDENTITY_INSERT`, `START WITH LIMIT VALUE`).
+  - A schema exports every table, view, sequence and routine to one `.sql` file, or one CSV/JSON file per table into a folder.
+  - Rows are streamed from the server to the file, so large tables do not fill the memory; progress shows the object and row count, and **Stop** cancels on the server and leaves no half file.
+- **Import data…** on a table and **Import file as a new table…** on a schema ([#12](https://github.com/LowBloat/LowQuery/issues/12)): CSV (any delimiter) or JSON (an array or one object per line). The encoding (UTF-8, UTF-16, Windows-1252), delimiter and header row are detected, columns are matched by name, values like `1.234,56`, `31/12/2024` and `sim` are converted for the column, and everything is inserted in one transaction. The only options: delimiter, header row, and replacing the table's rows. A new table gets column types from the file.
+- **Run SQL file…** on connections and schemas ([#14](https://github.com/LowBloat/LowQuery/issues/14)): runs a script (an export, a dump from another tool) statement by statement on its own connection, with progress, stopping at the first error unless unticked, and lists the statements that failed.
+
 ### Fixed
+- Context menus (tree and grid) threw an error in the console while closing.
 - Oracle: running a query that returns a CLOB or BLOB again in the same session could fail with ORA-01002 (fetch out of sequence) ([#17](https://github.com/LowBloat/LowQuery/issues/17)). It happened when the server parsed the query again, which on Oracle 23ai often came by the third run of a query such as `dbms_metadata.get_ddl`, and on every run after one that had failed, until reconnecting. Both causes were in the Oracle driver LowQuery ships and are fixed there; Show DDL no longer needs to bypass the statement cache.
 
 ## [0.5.1] - 2026-10-22

@@ -37,6 +37,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/redis_db.rs` | Redis and Valkey session on `redis-rs` (RESP3) |
 | `drivers/sqlite.rs` | SQLite session on `rusqlite` (bundled engine) |
 | `mcp/` | `lowquery mcp`: MCP server over stdio for AI agents (`server.rs` protocol and sessions, `tools.rs`, `guard.rs` statement checks, `catalog.rs` search/foreign keys/plans per engine, `audit.rs` activity log); see [AI.md](AI.md) |
+| `transfer/` | Export to SQL, CSV and JSON and import from CSV and JSON (`export.rs`, `import.rs`, `sql.rs` literals, `catalog.rs` generated and identity columns, foreign key order) |
 | `ai_setup.rs` | The MCP command and the configuration of each AI client |
 | `import/` | Reads connection files of DBeaver, DataGrip, pgAdmin 4 and SQL Developer (`jdbc.rs` parses JDBC URLs); passwords go from the file to the keychain without reaching the interface |
 | `drivers/tns.rs` | Finds and parses `tnsnames.ora` (TNS_ADMIN, ORACLE_HOME, Windows registry, clients on PATH) |
@@ -99,6 +100,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/state/edits.ts` | Pending grid edits per result and the changes sent to `apply_changes` |
 | `lib/state/explorer.svelte.ts` | Schema browser and autocompletion namespace |
 | `lib/state/actions.svelte.ts` | Context menu actions of the tree: confirmation dialogs, the table designer, statements run on the tree's session |
+| `lib/state/transfer.svelte.ts` | Export, import and run-file dialogs: their own session, progress events, cancel |
 | `lib/sql/ddl.ts` | CREATE/ALTER/RENAME/DROP/TRUNCATE and generated statements per engine, for the tree menus and the table designer |
 | `lib/state/ai.svelte.ts` | AI agents dialog: client setup and activity |
 | `lib/state/importer.svelte.ts` | Import dialog: detected tool files, preview, duplicate check |
@@ -119,6 +121,16 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | SQLite | The statements kept in `sqlite_schema` for the table, its indexes and triggers |
 
 The statements the menus and the table designer run come from `lib/sql/ddl.ts`. They run one at a time on the tree's session (never a tab's, so an open transaction in a tab is not touched), and every one is shown before it runs. `ddl.fixtures.json` holds them for a fixed scenario per dialect; `drivers/ddl_fixtures.rs` runs that scenario on every database in CI, including a round trip of the DDL each driver reads back (drop the object, run its DDL, compare the columns).
+
+## Export and import
+
+`transfer/` moves data in and out on a session opened for the job, so the tree and the tabs stay usable:
+
+- **Reading rows.** `Session::stream` sends the columns and then batches of 500 rows through a channel, straight from each driver's cursor (a PostgreSQL portal in a read-only snapshot, `query_iter` in MySQL, the TDS stream, the Oracle cursor, SQLite steps). Values are formatted as in the grid but in full (`drivers::full_values`: binary values are not cut to the preview size). Dropping the receiver stops the reader; cancel also stops the query on the server.
+- **SQL scripts** (`export.rs`, `sql.rs`): the structure comes from `object_ddl`, tables in foreign key order (`catalog.rs`), foreign keys PostgreSQL and SQL Server script as `ALTER TABLE` moved to the end, MySQL wrapped in `FOREIGN_KEY_CHECKS = 0`. Rows become INSERTs with literals each database reads back exactly (`decode(..., 'hex')`, `0x...`, `HEXTORAW`, `X'...'`, `TIMESTAMP '...'`, CLOB pieces in Oracle, backslashes in MySQL), generated columns left out, and identity columns kept: `OVERRIDING SYSTEM VALUE` and `setval` in PostgreSQL, `SET IDENTITY_INSERT` in SQL Server, `START WITH LIMIT VALUE` in Oracle.
+- **CSV and JSON**: one file per table; *CSV for Excel* uses `;`, a BOM and CRLF.
+- **Import** (`import.rs`): the file is decoded (UTF-8, UTF-16, Windows-1252), the delimiter and header detected, columns matched by name, and values converted for the column type (`1.234,56`, `31/12/2024`, `sim`/`não`). Rows go in batches of INSERTs (the same literal writer) in one transaction.
+- `transfer/round_trip.rs` exports a table with awkward values on every database in CI and loads it back from the SQL script, CSV, CSV for Excel and JSON.
 
 Scripts are split in the interface so the editor knows where each statement starts. Each statement is a separate command call: results appear as they finish, and an error position maps back to the document.
 
