@@ -434,8 +434,7 @@ impl OraSession {
         let _busy = self.busy.lock().await;
         if matches!(kind, "function" | "procedure" | "package" | "type") {
             // PL/SQL units come from their stored source, as SQL Developer
-            // shows them; DBMS_METADATA fails to fetch them on 23ai
-            // (ORA-01002).
+            // shows them, spec and body together.
             let params = [
                 schema.to_string(),
                 name.to_string(),
@@ -581,7 +580,9 @@ impl OraSession {
     }
 }
 
-/// First column of every row, as text.
+/// First column of every row, as text. The statement stays out of the
+/// driver's cache: on 23ai, running a cached DBMS_METADATA query a third time
+/// in a session fails with ORA-01002 (fetch out of sequence).
 fn first_texts(conn: &Connection, sql: &str, params: &[String]) -> AppResult<Vec<String>> {
     let binds: Vec<&dyn oracledb::ToDbValue> = params
         .iter()
@@ -590,6 +591,7 @@ fn first_texts(conn: &Connection, sql: &str, params: &[String]) -> AppResult<Vec
     let cursor = conn
         .statement(sql)
         .map_err(map_error)?
+        .exclude_from_cache()
         .build()
         .map_err(map_error)?
         .query(&binds)
