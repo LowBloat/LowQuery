@@ -18,8 +18,9 @@ async fn run(s: &Session, sql: &str) -> crate::error::AppResult<crate::model::Ex
 }
 
 /// Statements of a DDL script: lines ending in `;` close a statement (the
-/// fixtures hold no routine bodies), SQL Server batches end at `GO`.
-fn statements(ddl: &str, dialect: &str) -> Vec<String> {
+/// fixtures hold no routine bodies), SQL Server batches end at `GO`. Parts
+/// that are only comments are left out.
+pub(crate) fn statements(ddl: &str, dialect: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut current = String::new();
     for line in ddl.lines() {
@@ -41,7 +42,12 @@ fn statements(ddl: &str, dialect: &str) -> Vec<String> {
         }
     }
     out.push(current);
-    out.into_iter().filter(|s| !s.trim().is_empty()).collect()
+    out.into_iter()
+        .filter(|s| {
+            s.lines()
+                .any(|l| !l.trim().is_empty() && !l.trim_start().starts_with("--"))
+        })
+        .collect()
 }
 
 /// `dialect` as in the frontend: `postgres`, `oracle`, `mysql`, `sqlserver`

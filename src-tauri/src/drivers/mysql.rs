@@ -27,7 +27,7 @@ use mysql_async::prelude::Queryable;
 use mysql_async::{Column, Conn, DriverError, IoError, Opts, OptsBuilder, SslOpts, Value};
 use parking_lot::Mutex;
 
-use super::{first_keywords, TxState};
+use super::{first_keywords, RowSink, StreamEvent, TxState, STREAM_BATCH};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ApplyRequest, ApplyResult, CellValue, ColumnInfo, ConnectionProfile, DbColumn, DbObject,
@@ -576,6 +576,51 @@ impl MySession {
             .collect())
     }
 
+    /// Reads the rows of a query as the server sends them, in batches.
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        let mut conn = self.conn.lock().await;
+        let mut result = conn.query_iter(sql).await.map_err(map_error)?;
+        let cols = result
+            .columns()
+            .filter(|c| !c.is_empty())
+            .ok_or_else(|| AppError::invalid("The statement returns no rows."))?;
+        let info = cols
+            .iter()
+            .map(|c| ColumnInfo {
+                name: c.name_str().into_owned(),
+                type_name: type_name(c.column_type(), c.flags(), c.character_set()),
+                kind: value_kind(c.column_type(), c.character_set()),
+            })
+            .collect();
+        sink.send(StreamEvent::Columns(info))
+            .await
+            .map_err(|_| super::stream_stopped())?;
+        let mut total = 0u64;
+        let mut batch = Vec::with_capacity(STREAM_BATCH);
+        while let Some(row) = result.next().await.map_err(map_error)? {
+            batch.push(super::full_values(|| {
+                cols.iter()
+                    .zip(row.unwrap())
+                    .map(|(c, v)| cell(c, v))
+                    .collect::<Vec<_>>()
+            }));
+            total += 1;
+            if batch.len() == STREAM_BATCH {
+                let full = std::mem::replace(&mut batch, Vec::with_capacity(STREAM_BATCH));
+                sink.send(StreamEvent::Rows(full))
+                    .await
+                    .map_err(|_| super::stream_stopped())?;
+            }
+        }
+        result.drop_result().await.map_err(map_error)?;
+        if !batch.is_empty() {
+            sink.send(StreamEvent::Rows(batch))
+                .await
+                .map_err(|_| super::stream_stopped())?;
+        }
+        Ok(total)
+    }
+
     /// `SHOW CREATE` output, with routines and triggers between `DELIMITER`
     /// lines so the script runs as written.
     pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {
@@ -755,7 +800,7 @@ fn is_string_type(t: ColumnType) -> bool {
 
 /// `0x` + uppercase hexadecimal, the way the mysql client shows binary data.
 fn hex(bytes: &[u8]) -> String {
-    let shown = &bytes[..bytes.len().min(BINARY_PREVIEW_BYTES)];
+    let shown = &bytes[..bytes.len().min(super::binary_limit(BINARY_PREVIEW_BYTES))];
     let mut s = String::with_capacity(2 + shown.len() * 2);
     s.push_str("0x");
     for b in shown {
@@ -2864,5 +2909,17 @@ mod tests {
             .await
             .expect("connect");
         crate::drivers::ddl_fixtures::check(&s, "mysql", &profile.database).await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn export_import_round_trip() {
+        let Some((profile, password)) = profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, password.as_deref())
+            .await
+            .expect("connect");
+        crate::transfer::round_trip::check(&s, &profile.database).await;
     }
 }

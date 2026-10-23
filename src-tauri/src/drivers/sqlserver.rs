@@ -30,7 +30,7 @@ use tiberius::{
 use tokio::net::TcpStream;
 use tokio_util::compat::{Compat, TokioAsyncWriteCompatExt};
 
-use super::{first_keywords, TxState};
+use super::{first_keywords, RowSink, StreamEvent, TxState, STREAM_BATCH};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ApplyRequest, ApplyResult, ColumnInfo, ConnectionProfile, DbColumn, DbObject, EditColumn,
@@ -789,6 +789,52 @@ impl MsSession {
                 }
             })
             .collect())
+    }
+
+    /// Reads the first result set of a batch as the server sends it.
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        let mut client = self.lock().await?;
+        let mut stream = client
+            .simple_query(sql.to_string())
+            .await
+            .map_err(|e| self.fail(e, Some(sql)))?;
+        let mut total = 0u64;
+        let mut batch = Vec::with_capacity(STREAM_BATCH);
+        while let Some(item) = stream
+            .try_next()
+            .await
+            .map_err(|e| self.fail(e, Some(sql)))?
+        {
+            match item {
+                QueryItem::Metadata(meta) if meta.result_index() == 0 => {
+                    let columns = meta.columns().iter().map(column_info).collect();
+                    sink.send(StreamEvent::Columns(columns))
+                        .await
+                        .map_err(|_| super::stream_stopped())?;
+                }
+                QueryItem::Row(row) if row.result_index() == 0 => {
+                    batch.push(super::full_values(|| {
+                        row.cells()
+                            .map(|(c, d)| cell(c.column_type(), d))
+                            .collect::<Vec<_>>()
+                    }));
+                    total += 1;
+                    if batch.len() == STREAM_BATCH {
+                        let full = std::mem::replace(&mut batch, Vec::with_capacity(STREAM_BATCH));
+                        sink.send(StreamEvent::Rows(full))
+                            .await
+                            .map_err(|_| super::stream_stopped())?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !batch.is_empty() {
+            sink.send(StreamEvent::Rows(batch))
+                .await
+                .map_err(|_| super::stream_stopped())?;
+        }
+        Ok(total)
     }
 
     /// Views, routines and triggers come from `OBJECT_DEFINITION`; tables,
@@ -1963,7 +2009,7 @@ fn decimal(value: i128, scale: u32) -> String {
 
 /// Uppercase hexadecimal with the 0x prefix, as SSMS shows binary values.
 fn hex(bytes: &[u8]) -> String {
-    let shown = &bytes[..bytes.len().min(BINARY_PREVIEW_BYTES)];
+    let shown = &bytes[..bytes.len().min(super::binary_limit(BINARY_PREVIEW_BYTES))];
     let mut s = String::with_capacity(shown.len() * 2 + 2);
     s.push_str("0x");
     for b in shown {
@@ -3341,5 +3387,17 @@ mod tests {
             .await
             .expect("connect");
         crate::drivers::ddl_fixtures::check(&s, "sqlserver", "dbo").await;
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn export_import_round_trip() {
+        let Some((profile, password)) = test_profile() else {
+            return;
+        };
+        let s = crate::drivers::Session::open(&profile, Some(&password))
+            .await
+            .expect("connect");
+        crate::transfer::round_trip::check(&s, "dbo").await;
     }
 }

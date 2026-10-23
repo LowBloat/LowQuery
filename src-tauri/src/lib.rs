@@ -5,13 +5,14 @@ mod import;
 pub mod mcp;
 mod model;
 mod profiles;
+mod transfer;
 mod updates;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::RwLock;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 
 use drivers::{Session, TxState};
 use error::{AppError, AppResult, ErrorKind};
@@ -23,6 +24,7 @@ use profiles::ProfileStore;
 struct AppState {
     profiles: ProfileStore,
     sessions: RwLock<HashMap<String, Arc<Session>>>,
+    jobs: transfer::Jobs,
 }
 
 impl AppState {
@@ -320,6 +322,89 @@ async fn apply_changes(
     state.session(&session_id)?.apply_changes(&request).await
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProgressEvent {
+    job_id: String,
+    #[serde(flatten)]
+    progress: transfer::Progress,
+}
+
+fn reporter(app: AppHandle, job_id: String) -> impl Fn(transfer::Progress) + Sync {
+    move |progress| {
+        let _ = app.emit(
+            "transfer-progress",
+            ProgressEvent {
+                job_id: job_id.clone(),
+                progress,
+            },
+        );
+    }
+}
+
+/// Exports tables, views or a whole schema to a SQL script, CSV or JSON.
+#[tauri::command]
+async fn transfer_export(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: transfer::export::ExportRequest,
+) -> AppResult<transfer::export::ExportSummary> {
+    let session = state.session(&request.session_id)?;
+    let cancel = state.jobs.start(&request.job_id, &request.session_id);
+    let report = reporter(app, request.job_id.clone());
+    let outcome = transfer::export::export(&session, &request, &cancel, &report).await;
+    state.jobs.finish(&request.job_id);
+    outcome
+}
+
+/// Reads a CSV or JSON file and shows how it will be imported.
+#[tauri::command]
+async fn transfer_import_preview(
+    path: String,
+    options: transfer::import::ReadOptions,
+) -> AppResult<transfer::import::ImportPreview> {
+    tauri::async_runtime::spawn_blocking(move || transfer::import::preview(&path, &options))
+        .await
+        .map_err(|e| AppError::internal(e.to_string()))?
+}
+
+/// Imports a CSV or JSON file into a table, in one transaction.
+#[tauri::command]
+async fn transfer_import(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: transfer::import::ImportRequest,
+) -> AppResult<transfer::import::ImportSummary> {
+    let session = state.session(&request.session_id)?;
+    let cancel = state.jobs.start(&request.job_id, &request.session_id);
+    let report = reporter(app, request.job_id.clone());
+    let outcome = transfer::import::import(&session, &request, &cancel, &report).await;
+    state.jobs.finish(&request.job_id);
+    outcome
+}
+
+/// Stops an export or import, including the query running on the server.
+#[tauri::command]
+async fn transfer_cancel(state: State<'_, AppState>, job_id: String) -> AppResult<()> {
+    if let Some(session_id) = state.jobs.cancel(&job_id) {
+        if let Ok(session) = state.session(&session_id) {
+            let _ = session.cancel().await;
+        }
+    }
+    Ok(())
+}
+
+/// A SQL script as text, whatever its encoding (UTF-8, UTF-16, Windows-1252).
+#[tauri::command]
+async fn read_sql_file(path: String) -> AppResult<String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let bytes = std::fs::read(&path)?;
+        Ok(transfer::import::decode(&bytes).0)
+    })
+    .await
+    .map_err(|e| AppError::internal(e.to_string()))?
+}
+
 /// Writes a file the user picked in the "Save as" dialog.
 #[tauri::command]
 fn write_text_file(path: String, content: String) -> AppResult<()> {
@@ -353,6 +438,7 @@ pub fn run() {
         .manage(AppState {
             profiles,
             sessions: RwLock::new(HashMap::new()),
+            jobs: transfer::Jobs::default(),
         })
         .invoke_handler(tauri::generate_handler![
             list_profiles,
@@ -371,6 +457,11 @@ pub fn run() {
             list_objects,
             list_columns,
             object_ddl,
+            transfer_export,
+            transfer_import_preview,
+            transfer_import,
+            transfer_cancel,
+            read_sql_file,
             write_text_file,
             oracle_tns_sources,
             oracle_tns_folder,

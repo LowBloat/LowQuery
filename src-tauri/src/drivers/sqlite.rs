@@ -24,7 +24,7 @@ use parking_lot::Mutex;
 use rusqlite::types::{Type, Value, ValueRef};
 use rusqlite::{ffi, Connection, InterruptHandle, OpenFlags, Statement};
 
-use super::{first_keywords, TxState};
+use super::{first_keywords, RowSink, StreamEvent, TxState, STREAM_BATCH};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ApplyRequest, ApplyResult, ColumnInfo, ConnectionProfile, DbColumn, DbObject, EditColumn,
@@ -243,6 +243,65 @@ impl LiteSession {
                 default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
             })
             .collect())
+    }
+
+    /// Steps through the rows of a query, sending them in batches.
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        let conn = self.conn.clone();
+        let sql = sql.to_string();
+        blocking(move || {
+            let conn = conn.lock();
+            let mut stmt = conn.prepare(&sql).map_err(map_error)?;
+            let n = stmt.column_count();
+            if n == 0 {
+                return Err(AppError::invalid("The statement returns no rows."));
+            }
+            let info = stmt
+                .columns()
+                .iter()
+                .map(|c| {
+                    let decl = c
+                        .decl_type()
+                        .map(|t| t.trim().to_string())
+                        .unwrap_or_default();
+                    ColumnInfo {
+                        name: c.name().to_string(),
+                        kind: if decl.is_empty() {
+                            class_kind(None)
+                        } else {
+                            declared_kind(&decl)
+                        },
+                        type_name: decl,
+                    }
+                })
+                .collect();
+            sink.blocking_send(StreamEvent::Columns(info))
+                .map_err(|_| super::stream_stopped())?;
+            let mut rows = stmt.raw_query();
+            let mut total = 0u64;
+            let mut batch = Vec::with_capacity(STREAM_BATCH);
+            while let Some(row) = rows.next().map_err(map_error)? {
+                let cells = super::full_values(|| {
+                    (0..n)
+                        .map(|i| row.get_ref(i).map(cell))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(map_error)?;
+                batch.push(cells);
+                total += 1;
+                if batch.len() == STREAM_BATCH {
+                    let full = std::mem::replace(&mut batch, Vec::with_capacity(STREAM_BATCH));
+                    sink.blocking_send(StreamEvent::Rows(full))
+                        .map_err(|_| super::stream_stopped())?;
+                }
+            }
+            if !batch.is_empty() {
+                sink.blocking_send(StreamEvent::Rows(batch))
+                    .map_err(|_| super::stream_stopped())?;
+            }
+            Ok(total)
+        })
+        .await
     }
 
     /// The statements SQLite keeps for the table or view, then its indexes
@@ -556,7 +615,7 @@ fn real(v: f64) -> String {
 
 /// `X'00FF'` like a blob literal; large blobs show the first 32 KiB.
 fn blob(bytes: &[u8]) -> String {
-    let shown = &bytes[..bytes.len().min(BINARY_PREVIEW_BYTES)];
+    let shown = &bytes[..bytes.len().min(super::binary_limit(BINARY_PREVIEW_BYTES))];
     let mut s = String::with_capacity(shown.len() * 2 + 3);
     s.push_str("X'");
     for b in shown {
@@ -2687,6 +2746,17 @@ mod tests {
             .await
             .unwrap();
         crate::drivers::ddl_fixtures::check(&s, "sqlite", "main").await;
+        drop(s);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn export_import_round_trip() {
+        let path = temp_path("xfer");
+        let s = crate::drivers::Session::open(&profile(&path, true), None)
+            .await
+            .unwrap();
+        crate::transfer::round_trip::check(&s, "main").await;
         drop(s);
         let _ = std::fs::remove_file(&path);
     }

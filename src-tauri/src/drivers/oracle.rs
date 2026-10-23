@@ -15,7 +15,7 @@ use oracledb::{
 };
 use parking_lot::Mutex;
 
-use super::{first_keywords, tns, TxState};
+use super::{first_keywords, tns, RowSink, StreamEvent, TxState, STREAM_BATCH};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ApplyRequest, ApplyResult, CellValue, ColumnInfo, ConnectionProfile, DbColumn, DbObject,
@@ -410,6 +410,59 @@ impl OraSession {
                 default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
             })
             .collect())
+    }
+
+    /// Reads the rows of a query in batches of [`STREAM_BATCH`].
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        let _busy = self.busy.lock().await;
+        let sql = sql.trim().trim_end_matches(';').to_string();
+        self.with_conn(move |conn| {
+            let stmt = conn
+                .statement(&sql)
+                .map_err(map_error)?
+                .fetch_array_size(STREAM_BATCH as u32)
+                .prefetch_rows(STREAM_BATCH as u32)
+                .exclude_from_cache()
+                .build()
+                .map_err(map_error)?;
+            let cursor = stmt.query(&[]).map_err(map_error)?;
+            let cols: Vec<Metadata> = cursor.columns().to_vec();
+            let info = cols
+                .iter()
+                .map(|c| ColumnInfo {
+                    name: c.name().to_string(),
+                    type_name: c.data_type(),
+                    kind: value_kind(c),
+                })
+                .collect();
+            sink.blocking_send(StreamEvent::Columns(info))
+                .map_err(|_| super::stream_stopped())?;
+            let mut total = 0u64;
+            let mut batch = Vec::with_capacity(STREAM_BATCH);
+            for row in cursor {
+                let row = row.map_err(map_error)?;
+                let cells = super::full_values(|| {
+                    cols.iter()
+                        .enumerate()
+                        .map(|(i, col)| cell(&row, i, col))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .map_err(map_error)?;
+                batch.push(cells);
+                total += 1;
+                if batch.len() == STREAM_BATCH {
+                    let full = std::mem::replace(&mut batch, Vec::with_capacity(STREAM_BATCH));
+                    sink.blocking_send(StreamEvent::Rows(full))
+                        .map_err(|_| super::stream_stopped())?;
+                }
+            }
+            if !batch.is_empty() {
+                sink.blocking_send(StreamEvent::Rows(batch))
+                    .map_err(|_| super::stream_stopped())?;
+            }
+            Ok(total)
+        })
+        .await
     }
 
     /// DDL from `DBMS_METADATA`, with a table's indexes (other than those
@@ -866,7 +919,7 @@ fn local_time(t: &OracleTimestamp) -> OracleTimestamp {
 
 /// Uppercase hexadecimal, the way SQL*Plus displays RAW.
 fn hex(bytes: &[u8]) -> String {
-    let shown = &bytes[..bytes.len().min(BINARY_PREVIEW_BYTES)];
+    let shown = &bytes[..bytes.len().min(super::binary_limit(BINARY_PREVIEW_BYTES))];
     let mut s = String::with_capacity(shown.len() * 2);
     for b in shown {
         let _ = write!(s, "{b:02X}");

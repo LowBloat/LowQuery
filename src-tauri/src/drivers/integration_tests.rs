@@ -663,3 +663,27 @@ async fn oracle_ddl_sql() {
     let schema = profile.user.to_uppercase();
     super::ddl_fixtures::check(&s, "oracle", &schema).await;
 }
+
+#[tokio::test]
+#[ignore]
+async fn postgres_export_import_round_trip() {
+    let Some((profile, pw)) = pg_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    crate::transfer::round_trip::check(&s, "public").await;
+}
+
+#[tokio::test]
+#[ignore]
+async fn oracle_export_import_round_trip() {
+    let Some((profile, pw)) = ora_profile() else {
+        return;
+    };
+    let s = Session::open(&profile, pw.as_deref())
+        .await
+        .expect("connection");
+    crate::transfer::round_trip::check(&s, &profile.user.to_uppercase()).await;
+}

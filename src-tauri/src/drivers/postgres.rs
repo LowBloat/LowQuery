@@ -30,7 +30,7 @@ use tokio_postgres::{AsyncMessage, CancelToken, Client, SimpleQueryMessage, Stat
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use super::pg_value::{type_label, value_kind, PgCell};
-use super::{first_keywords, TxState};
+use super::{first_keywords, RowSink, StreamEvent, TxState, STREAM_BATCH};
 use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
     ApplyRequest, ApplyResult, ColumnInfo, ConnectionProfile, DbColumn, DbObject, EditColumn,
@@ -568,6 +568,65 @@ impl PgSession {
                 default_value: r.get(4),
             })
             .collect())
+    }
+
+    /// Reads the rows through a portal in a read-only snapshot, one batch
+    /// at a time.
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        let mut client = self.client.lock().await;
+        let stmt = client.prepare(sql).await.map_err(map_error)?;
+        let columns = stmt
+            .columns()
+            .iter()
+            .map(|c| ColumnInfo {
+                name: c.name().to_string(),
+                type_name: type_label(c.type_()),
+                kind: value_kind(c.type_()),
+            })
+            .collect();
+        sink.send(StreamEvent::Columns(columns))
+            .await
+            .map_err(|_| super::stream_stopped())?;
+        let tx = client
+            .build_transaction()
+            .read_only(true)
+            .isolation_level(tokio_postgres::IsolationLevel::RepeatableRead)
+            .start()
+            .await
+            .map_err(map_error)?;
+        let portal = tx.bind(&stmt, &[]).await.map_err(map_error)?;
+        let mut total = 0u64;
+        loop {
+            let rows = tx
+                .query_portal(&portal, STREAM_BATCH as i32)
+                .await
+                .map_err(map_error)?;
+            let n = rows.len();
+            let batch = super::full_values(|| {
+                rows.iter()
+                    .map(|row| {
+                        (0..row.len())
+                            .map(|i| {
+                                row.try_get::<_, PgCell>(i).map(|c| c.0).map_err(|e| {
+                                    AppError::internal(format!("Column {}: {e}", i + 1))
+                                })
+                            })
+                            .collect::<AppResult<Vec<_>>>()
+                    })
+                    .collect::<AppResult<Vec<_>>>()
+            })?;
+            total += n as u64;
+            if !batch.is_empty() {
+                sink.send(StreamEvent::Rows(batch))
+                    .await
+                    .map_err(|_| super::stream_stopped())?;
+            }
+            if n < STREAM_BATCH {
+                break;
+            }
+        }
+        tx.commit().await.map_err(map_error)?;
+        Ok(total)
     }
 
     pub async fn object_ddl(&self, schema: &str, name: &str, kind: &str) -> AppResult<String> {

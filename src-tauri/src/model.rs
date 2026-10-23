@@ -271,7 +271,7 @@ pub struct ApplyResult {
     pub in_transaction: bool,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DbObject {
     pub name: String,

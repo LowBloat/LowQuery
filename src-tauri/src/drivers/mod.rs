@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod ddl_fixtures;
+pub(crate) mod ddl_fixtures;
 #[cfg(test)]
 mod integration_tests;
 pub mod mysql;
@@ -13,11 +13,56 @@ pub mod tns;
 #[cfg(test)]
 mod view_fixtures;
 
-use crate::error::{AppError, AppResult};
+use std::cell::Cell;
+
+use crate::error::{AppError, AppResult, ErrorKind};
 use crate::model::{
-    ApplyRequest, ApplyResult, ConnectionProfile, DbColumn, DbObject, Engine, ExecRequest,
-    ExecResult,
+    ApplyRequest, ApplyResult, ColumnInfo, ConnectionProfile, DbColumn, DbObject, Engine,
+    ExecRequest, ExecResult,
 };
+
+/// What [`Session::stream`] sends: the columns first, then rows in batches.
+#[derive(Debug)]
+pub enum StreamEvent {
+    Columns(Vec<ColumnInfo>),
+    Rows(Vec<Vec<Option<String>>>),
+}
+
+pub type RowSink = tokio::sync::mpsc::Sender<StreamEvent>;
+
+/// Rows per [`StreamEvent::Rows`] batch.
+pub const STREAM_BATCH: usize = 500;
+
+thread_local! {
+    static FULL_VALUES: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `f` with values formatted in full: binary values are not cut to the
+/// grid's preview size. Formatting is synchronous, so a thread-local flag
+/// covers it in async and blocking drivers alike.
+pub fn full_values<T>(f: impl FnOnce() -> T) -> T {
+    FULL_VALUES.with(|flag| {
+        let previous = flag.replace(true);
+        let out = f();
+        flag.set(previous);
+        out
+    })
+}
+
+/// Bytes of a binary value shown as text: `preview` in the grid, all of
+/// them inside [`full_values`].
+pub fn binary_limit(preview: usize) -> usize {
+    if FULL_VALUES.with(Cell::get) {
+        usize::MAX
+    } else {
+        preview
+    }
+}
+
+/// The reader of a stream went away (the export was cancelled).
+pub fn stream_stopped() -> AppError {
+    AppError::new(ErrorKind::Cancelled, "Cancelled.")
+}
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -159,6 +204,20 @@ impl Session {
 
     pub async fn list_columns(&self, schema: &str, table: &str) -> AppResult<Vec<DbColumn>> {
         dispatch!(self, s => s.list_columns(schema, table).await)
+    }
+
+    /// Runs a query and sends its rows to `sink` in batches, with values in
+    /// full, without keeping them in memory. Returns the number of rows.
+    /// Stops with a cancelled error when the receiver is dropped.
+    pub async fn stream(&self, sql: &str, sink: RowSink) -> AppResult<u64> {
+        match self {
+            Session::Postgres(s) => s.stream(sql, sink).await,
+            Session::Oracle(s) => s.stream(sql, sink).await,
+            Session::Mysql(s) => s.stream(sql, sink).await,
+            Session::SqlServer(s) => s.stream(sql, sink).await,
+            Session::Sqlite(s) => s.stream(sql, sink).await,
+            Session::Redis(_) => Err(AppError::invalid("Redis keys cannot be exported yet.")),
+        }
     }
 
     /// The statements that create an object, read from the database's own

@@ -363,7 +363,7 @@ fn fallback(raw: &[u8]) -> String {
 }
 
 fn hex_bytea(raw: &[u8]) -> String {
-    let shown = &raw[..raw.len().min(BINARY_PREVIEW_BYTES)];
+    let shown = &raw[..raw.len().min(super::binary_limit(BINARY_PREVIEW_BYTES))];
     let mut s = String::with_capacity(2 + shown.len() * 2);
     s.push_str("\\x");
     for b in shown {
