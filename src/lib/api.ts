@@ -208,6 +208,64 @@ export interface DbColumn {
 	defaultValue?: string | null;
 }
 
+export type ExportFormat = "sql" | "csv" | "csv-excel" | "json";
+export type ExportContent = "all" | "structure" | "data";
+
+export interface ExportRequest {
+	jobId: string;
+	sessionId: string;
+	schema: string;
+	/** null exports the whole schema. */
+	objects: DbObject[] | null;
+	format: ExportFormat;
+	content: ExportContent;
+	/** A file, or a folder for CSV/JSON of several tables. */
+	path: string;
+	/** Header comment of SQL scripts. */
+	source: string;
+}
+
+export interface ExportSummary {
+	objects: number;
+	rows: number;
+	files: string[];
+	warnings: string[];
+}
+
+/** Type a file column looks like, for a new table. */
+export type InferredType = "integer" | "decimal" | "boolean" | "date" | "timestamp" | "text";
+
+export interface ImportOptions {
+	/** null detects it. */
+	delimiter: string | null;
+	header: boolean | null;
+}
+
+export interface ImportPreview {
+	format: "csv" | "json";
+	encoding: string;
+	delimiter: string;
+	header: boolean;
+	columns: string[];
+	rows: (string | null)[][];
+	totalRows: number;
+	inferred: InferredType[];
+	maxLengths: number[];
+}
+
+export interface ImportSummary {
+	rows: number;
+	skippedColumns: string[];
+}
+
+export interface TransferProgress {
+	jobId: string;
+	object: string;
+	step: number;
+	steps: number;
+	rows: number;
+}
+
 export type ErrorKind =
 	| "database"
 	| "connection"
@@ -307,6 +365,21 @@ export const api = {
 		invoke<ImportResult>("import_apply", { tool, path, keys, withPasswords }),
 	listColumns: (sessionId: string, schema: string, table: string) =>
 		invoke<DbColumn[]>("list_columns", { sessionId, schema, table }),
+	exportData: (request: ExportRequest) => invoke<ExportSummary>("transfer_export", { request }),
+	dataImportPreview: (path: string, options: ImportOptions) =>
+		invoke<ImportPreview>("transfer_import_preview", { path, options }),
+	importData: (request: {
+		jobId: string;
+		sessionId: string;
+		path: string;
+		options: ImportOptions;
+		schema: string;
+		table: string;
+		replace: boolean;
+	}) => invoke<ImportSummary>("transfer_import", { request }),
+	cancelTransfer: (jobId: string) => invoke<void>("transfer_cancel", { jobId }),
+	/** A SQL file as text, whatever its encoding. */
+	readSqlFile: (path: string) => invoke<string>("read_sql_file", { path }),
 	/** The statements that create the object, read from the database's catalog. */
 	objectDdl: (sessionId: string, schema: string, name: string, kind: string) =>
 		invoke<string>("object_ddl", { sessionId, schema, name, kind }),

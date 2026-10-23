@@ -7,7 +7,7 @@
  * `ddl.fixtures.json`, which the Rust integration tests run against every
  * database (`src-tauri/src/drivers/ddl_fixtures.rs`).
  */
-import type { Engine } from "../api";
+import type { Engine, InferredType } from "../api";
 import { qualified, quoteIdent, redisArg } from "./ident";
 
 /** A column in the table designer. */
@@ -610,6 +610,35 @@ export function templateKinds(engine: Engine): ("view" | "function" | "procedure
 			return ["view"];
 		case "redis":
 			return [];
+	}
+}
+
+type FixedKind = Exclude<InferredType, "text">;
+
+/** Column types for values found in an imported file, per engine. */
+const IMPORT_TYPES: Record<FixedKind, Record<Engine, string>> = {
+	integer: { postgres: "bigint", oracle: "NUMBER(19)", mysql: "BIGINT", mariadb: "BIGINT", sqlserver: "bigint", sqlite: "INTEGER", redis: "" },
+	decimal: { postgres: "numeric", oracle: "NUMBER", mysql: "DECIMAL(28,8)", mariadb: "DECIMAL(28,8)", sqlserver: "decimal(28,8)", sqlite: "NUMERIC", redis: "" },
+	boolean: { postgres: "boolean", oracle: "NUMBER(1)", mysql: "TINYINT(1)", mariadb: "TINYINT(1)", sqlserver: "bit", sqlite: "INTEGER", redis: "" },
+	date: { postgres: "date", oracle: "DATE", mysql: "DATE", mariadb: "DATE", sqlserver: "date", sqlite: "TEXT", redis: "" },
+	timestamp: { postgres: "timestamp", oracle: "TIMESTAMP", mysql: "DATETIME(6)", mariadb: "DATETIME(6)", sqlserver: "datetime2", sqlite: "TEXT", redis: "" },
+};
+
+/** Column type for a kind of value found in an imported file; text gets room to grow. */
+export function typeFor(kind: InferredType, maxLength: number, engine: Engine): string {
+	if (kind !== "text") return IMPORT_TYPES[kind][engine];
+	const len = Math.max(50, Math.ceil((maxLength * 1.5) / 10) * 10);
+	switch (engine) {
+		case "postgres":
+			return "text";
+		case "sqlite":
+			return "TEXT";
+		case "oracle":
+			return len <= 4000 ? `VARCHAR2(${len} CHAR)` : "CLOB";
+		case "sqlserver":
+			return len <= 4000 ? `nvarchar(${len})` : "nvarchar(max)";
+		default:
+			return len <= 4000 ? `VARCHAR(${len})` : "LONGTEXT";
 	}
 }
 

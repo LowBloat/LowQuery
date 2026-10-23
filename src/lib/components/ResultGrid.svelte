@@ -711,7 +711,8 @@
 		open={true}
 		anchor={{ x: h.x, y: h.y }}
 		onOpenChange={(o) => {
-			if (!o) headMenu = null;
+			// After the menu has finished closing: it still reads its anchor.
+			if (!o) queueMicrotask(() => (headMenu = null));
 		}}
 	>
 		<DropdownMenuItem onclick={() => sortBy(h.col, 1)}>
@@ -773,7 +774,7 @@
 		open={true}
 		anchor={{ x: m.x, y: m.y }}
 		onOpenChange={(o) => {
-			if (!o) menu = null;
+			if (!o) queueMicrotask(() => (menu = null));
 		}}
 	>
 		{#if cellEditable}

@@ -40,8 +40,12 @@
 		Columns3,
 		Shapes,
 		FolderTree,
+		Download,
+		Upload,
+		FileUp,
 	} from "@lucide/svelte";
 	import { actions as act, kindName, type MenuTarget } from "../state/actions.svelte";
+	import { transfer } from "../state/transfer.svelte";
 	import { explorer, RELATION_KINDS, REDIS_KINDS } from "../state/explorer.svelte";
 	import { canDrop, hasDdl, schemaWord, templateKinds } from "../sql/ddl";
 	import { qualified, quoteIdent } from "../sql/ident";
@@ -78,7 +82,8 @@
 		open={true}
 		anchor={{ x: m.x, y: m.y }}
 		onOpenChange={(o) => {
-			if (!o) act.menu = null;
+			// After the menu has finished closing: it still reads its anchor.
+			if (!o) queueMicrotask(() => (act.menu = null));
 		}}
 	>
 		{#if t.type === "connection"}
@@ -125,6 +130,12 @@
 				<DropdownMenuItem onclick={() => act.revealFile(p)}>
 					{#snippet icon()}<FolderOpen size={15} />{/snippet}
 					Show file in folder
+				</DropdownMenuItem>
+			{/if}
+			{#if e !== "redis"}
+				<DropdownMenuItem onclick={() => transfer.chooseSqlFile(p, null)}>
+					{#snippet icon()}<FileUp size={15} />{/snippet}
+					Run SQL file…
 				</DropdownMenuItem>
 			{/if}
 			<DropdownMenuSeparator />
@@ -179,6 +190,19 @@
 						</DropdownMenuItem>
 					{/each}
 				</DropdownMenuSub>
+				<DropdownMenuSeparator />
+				<DropdownMenuItem onclick={() => transfer.openExport(p, s.name, null)}>
+					{#snippet icon()}<Download size={15} />{/snippet}
+					Export…
+				</DropdownMenuItem>
+				<DropdownMenuItem onclick={() => transfer.chooseImport(p, s.name, null)}>
+					{#snippet icon()}<Upload size={15} />{/snippet}
+					Import file as a new table…
+				</DropdownMenuItem>
+				<DropdownMenuItem onclick={() => transfer.chooseSqlFile(p, s.name)}>
+					{#snippet icon()}<FileUp size={15} />{/snippet}
+					Run SQL file…
+				</DropdownMenuItem>
 			{/if}
 			<DropdownMenuSeparator />
 			{#if e === "postgres"}
@@ -254,6 +278,18 @@
 					<DropdownMenuItem onclick={() => go(() => act.showDdl(p, s, o))}>
 						{#snippet icon()}<FileCode size={15} />{/snippet}
 						Show DDL
+					</DropdownMenuItem>
+				{/if}
+				{#if relation || hasDdl(o.kind, e)}
+					<DropdownMenuItem onclick={() => transfer.openExport(p, s.name, { name: o.name, kind: o.kind })}>
+						{#snippet icon()}<Download size={15} />{/snippet}
+						Export…
+					</DropdownMenuItem>
+				{/if}
+				{#if table}
+					<DropdownMenuItem onclick={() => transfer.chooseImport(p, s.name, o.name)}>
+						{#snippet icon()}<Upload size={15} />{/snippet}
+						Import data…
 					</DropdownMenuItem>
 				{/if}
 				{#if relation}

@@ -14,6 +14,9 @@
 	import ConfirmDialog from "./lib/components/ConfirmDialog.svelte";
 	import SqlActionDialog from "./lib/components/SqlActionDialog.svelte";
 	import TableDesigner from "./lib/components/TableDesigner.svelte";
+	import ExportDialog from "./lib/components/ExportDialog.svelte";
+	import DataImportDialog from "./lib/components/DataImportDialog.svelte";
+	import RunFileDialog from "./lib/components/RunFileDialog.svelte";
 	import { workspace } from "./lib/state/workspace.svelte";
 
 	const SIDE_KEY = "lowquery.sidebar.width";
@@ -133,6 +136,9 @@
 <ConfirmDialog />
 <SqlActionDialog />
 <TableDesigner />
+<ExportDialog />
+<DataImportDialog />
+<RunFileDialog />
 <Toaster />
 
 <style>

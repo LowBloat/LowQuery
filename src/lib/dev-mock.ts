@@ -383,6 +383,25 @@ function importPreview(tool: string) {
 	};
 }
 
+function IMPORT_PREVIEW(delimiter: string, header: boolean) {
+	const rows = [
+		["1", "Ana Souza", "ana@exemplo.com.br", "Recife", "1.234,56", "31/12/2024", "pago"],
+		["2", "Bruno Lima", "", "Olinda", "89,90", "02/01/2025", ""],
+		["3", "Carla Dias", "carla@exemplo.com.br", "São Paulo", "15.000,00", "15/01/2025", "VIP"],
+	];
+	return {
+		format: "csv",
+		encoding: "Windows-1252",
+		delimiter,
+		header,
+		columns: header ? ["id", "name", "email", "city", "balance", "created_at", "observação"] : rows[0].map((_, i) => `column_${i + 1}`),
+		rows: (header ? rows : [["id", "name", "email", "city", "balance", "created_at", "observação"], ...rows]).map((r) => r.map((v) => (v === "" ? null : v))),
+		totalRows: 1834,
+		inferred: ["integer", "text", "text", "text", "decimal", "date", "text"],
+		maxLengths: [4, 32, 40, 20, 9, 10, 12],
+	};
+}
+
 export function installDevMock() {
 	let n = 0;
 	mockIPC(async (cmd, payload) => {
@@ -462,6 +481,28 @@ export function installDevMock() {
 				];
 			case "list_columns":
 				return TABLE_COLUMNS[args.table] ?? CUSTOMER_COLUMNS;
+			case "plugin:dialog|save":
+				return `C:/Users/demo/Documents/${args.options?.defaultPath ?? "export.sql"}`;
+			case "plugin:dialog|open": {
+				const o = args.options ?? {};
+				if (o.directory) return "C:/Users/demo/Documents/export";
+				const ext = o.filters?.[0]?.extensions?.[0];
+				return ext === "sql" ? "C:/Users/demo/Downloads/dump.sql" : "C:/Users/demo/Downloads/clientes.csv";
+			}
+			case "plugin:event|listen":
+				return 1;
+			case "transfer_export":
+				await new Promise((r) => setTimeout(r, 900));
+				return { objects: args.request.objects?.length ?? 5, rows: 12480, files: [args.request.path], warnings: [] };
+			case "transfer_import_preview":
+				return IMPORT_PREVIEW(args.options?.delimiter ?? ";", args.options?.header ?? true);
+			case "transfer_import":
+				await new Promise((r) => setTimeout(r, 900));
+				return { rows: 1834, skippedColumns: ["observação"] };
+			case "transfer_cancel":
+				return null;
+			case "read_sql_file":
+				return "-- dump\nCREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);\n";
 			case "object_ddl":
 				return args.name === "customers" ? CUSTOMERS_DDL : `-- ${args.kind} ${args.schema}.${args.name}
 CREATE ${args.kind.toUpperCase()} ${args.schema}.${args.name} ...;
