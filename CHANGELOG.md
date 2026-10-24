@@ -4,6 +4,8 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-10-24
+
 ### Added
 - A title bar in the LowBloat style on Windows and Linux, with File, Query, View and Help menus and themed window buttons. macOS keeps its traffic lights and gets the same menus in the menu bar. Alt or F10 moves to the menus; Help → Check for updates reports when LowQuery is up to date ([#20](https://github.com/LowBloat/LowQuery/issues/20)).
 
@@ -155,7 +157,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LowBloat/LowQuery/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LowBloat/LowQuery/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/LowBloat/LowQuery/compare/v0.4.0...v0.5.0
