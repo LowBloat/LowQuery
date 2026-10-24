@@ -4,6 +4,12 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- A title bar in the LowBloat style on Windows and Linux, with File, Query, View and Help menus and themed window buttons. macOS keeps its traffic lights and gets the same menus in the menu bar. Alt or F10 moves to the menus; Help → Check for updates reports when LowQuery is up to date ([#20](https://github.com/LowBloat/LowQuery/issues/20)).
+
+### Fixed
+- The window no longer flashes white or jumps in size on startup: it stays hidden until the interface has painted ([#20](https://github.com/LowBloat/LowQuery/issues/20)).
+
 ## [0.5.2] - 2026-10-23
 
 ### Added
