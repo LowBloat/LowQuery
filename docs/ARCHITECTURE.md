@@ -25,6 +25,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | File | Responsibility |
 | --- | --- |
 | `lib.rs` | Tauri commands, session registry, password resolution |
+| `window.rs` | The main window starts hidden and is shown once the page has painted (`window_painted`), with a five-second fallback; `tauri.macos.conf.json` keeps the native traffic lights |
 | `profiles.rs` | `connections.json` in the user config folder; passwords in the keychain (`keyring`) |
 | `model.rs` | Serializable types shared with the interface |
 | `error.rs` | `AppError` with kind, native code, position, detail and hint |
@@ -106,6 +107,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `lib/state/importer.svelte.ts` | Import dialog: detected tool files, preview, duplicate check |
 | `lib/state/tns.svelte.ts` | Detected `tnsnames.ora` sources and aliases for the connection and import dialogs |
 | `lib/components/` | Editor, grid, results, sidebar, dialogs |
+| `lib/app-menu.ts`, `lib/components/TitleBar.svelte`, `lib/state/window-frame.svelte.ts` | Title bar and File/Query/View/Help menus (in the title bar on Windows and Linux, in the menu bar on macOS) |
 | `lib/dev-mock.ts` | Development-only backend for `bun run dev` in a browser |
 
 ## Object DDL and tree actions

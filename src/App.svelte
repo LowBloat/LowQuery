@@ -1,6 +1,16 @@
 <script lang="ts">
 	import { onMount } from "svelte";
-	import { Drawer, Toaster } from "@codeatlasdev/ui";
+	import { Drawer, Toaster, colorScheme, toast } from "@codeatlasdev/ui";
+	import { getVersion } from "@tauri-apps/api/app";
+	import { openUrl } from "@tauri-apps/plugin-opener";
+	import { exit } from "@tauri-apps/plugin-process";
+	import TitleBar from "./lib/components/TitleBar.svelte";
+	import { IS_MAC, appMenu, setNativeAppMenu } from "./lib/app-menu";
+	import { windowFrame } from "./lib/state/window-frame.svelte";
+	import { importer } from "./lib/state/importer.svelte";
+	import { ai } from "./lib/state/ai.svelte";
+	import { transfer } from "./lib/state/transfer.svelte";
+	import { emptyProfile } from "./lib/api";
 	import Sidebar from "./lib/components/Sidebar.svelte";
 	import TabBar from "./lib/components/TabBar.svelte";
 	import QueryView from "./lib/components/QueryView.svelte";
@@ -58,6 +68,78 @@
 		target.addEventListener("pointerup", up);
 	}
 
+	const REPO = "https://github.com/LowBloat/LowQuery";
+	const SEPARATOR = { separator: true } as const;
+
+	async function checkForUpdates() {
+		await updates.check(true);
+		if (updates.error) toast.error(`Could not check for updates: ${updates.error}`);
+		else if (!updates.available) toast.success("LowQuery is up to date.");
+	}
+
+	async function showAbout() {
+		const version = await getVersion().catch(() => "");
+		toast.info(version ? `LowQuery ${version} · AGPL-3.0-only` : "LowQuery · AGPL-3.0-only");
+	}
+
+	// Application menus: in the title bar on Windows and Linux, in the global
+	// menu bar on macOS.
+	const menus = $derived.by(() => {
+		const tab = workspace.activeTab;
+		const profile = workspace.profile(tab?.profileId ?? null);
+		const connected = !!tab?.session;
+		return [
+			appMenu("file", "File", [
+				{ label: "New query", shortcut: "Ctrl+T", action: () => workspace.newTab(tab?.profileId ?? null) },
+				{ label: "New connection…", action: () => (workspace.editing = emptyProfile()) },
+				{ label: "Import connections…", action: () => importer.show() },
+				SEPARATOR,
+				{ label: "Run SQL file…", disabled: !profile, action: () => profile && transfer.chooseSqlFile(profile, null) },
+				SEPARATOR,
+				{ label: "Close tab", shortcut: "Ctrl+W", disabled: !tab, action: () => tab && workspace.closeTab(tab.id) },
+				!IS_MAC && SEPARATOR,
+				!IS_MAC && { label: "Quit LowQuery", action: () => exit(0) },
+			]),
+			appMenu("query", "Query", [
+				{ label: "Run statement", shortcut: "Ctrl+Enter", disabled: !tab || !profile || tab.running, action: () => tab && workspace.run(tab, "statement") },
+				{ label: "Run script", shortcut: "F5", disabled: !tab || !profile || tab.running, action: () => tab && workspace.run(tab, "script") },
+				{ label: "Stop", disabled: !tab?.running, action: () => tab && workspace.cancel(tab) },
+				SEPARATOR,
+				{ label: "Commit", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, true) },
+				{ label: "Rollback", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, false) },
+				{ label: "Auto-commit", checked: tab?.autocommit ?? true, disabled: !connected, action: () => tab && workspace.setAutocommit(tab, !tab.autocommit) },
+			]),
+			appMenu("view", "View", [
+				{ label: "Dark theme", checked: colorScheme.isDark, action: () => colorScheme.toggle() },
+				SEPARATOR,
+				{ label: "AI agents…", action: () => ai.show() },
+			]),
+			appMenu("help", "Help", [
+				{ label: "Documentation", action: () => openUrl(`${REPO}#readme`) },
+				{ label: "Release notes", action: () => openUrl(`${REPO}/releases`) },
+				{ label: "Report a problem", action: () => openUrl(`${REPO}/issues/new/choose`) },
+				SEPARATOR,
+				{ label: "Check for updates…", action: () => checkForUpdates() },
+				!IS_MAC && SEPARATOR,
+				!IS_MAC && { label: "About LowQuery", action: () => showAbout() },
+			]),
+		];
+	});
+
+	const activeProfile = $derived(workspace.profile(workspace.activeTab?.profileId ?? null));
+
+	$effect(() => {
+		if (!IS_MAC) return;
+		void setNativeAppMenu(menus, { label: "About LowQuery", action: () => showAbout() }).catch((e) => console.error("Failed to set the menu bar:", e));
+	});
+
+	// The window starts hidden; it appears once the page has painted, and
+	// follows the theme's background so resizing never shows white.
+	$effect(() => {
+		void colorScheme.isDark;
+		windowFrame.painted();
+	});
+
 	function onkeydown(e: KeyboardEvent) {
 		const mod = e.ctrlKey || e.metaKey;
 		// Reloading the page would discard open sessions and transactions.
@@ -92,6 +174,8 @@
 
 <svelte:window {onkeydown} />
 
+<div class="lq-shell">
+<TitleBar {menus} title={workspace.activeTab?.title ?? "LowQuery"} detail={activeProfile?.name ?? ""} />
 <div class="lq-app" class:lq-app--narrow={narrow} style="--side-w:{sideWidth}px">
 	{#if !narrow}
 		<aside class="lq-app__side">
@@ -120,6 +204,7 @@
 		{/each}
 	</main>
 </div>
+</div>
 
 {#if narrow}
 	<Drawer bind:open={drawer} side="left" title="Connections" hideTitle width="min(88vw, 340px)" class="lq-drawer">
@@ -142,10 +227,17 @@
 <Toaster />
 
 <style>
+	.lq-shell {
+		display: flex;
+		flex-direction: column;
+		height: var(--ca-vh, 100vh);
+		overflow: hidden;
+	}
 	.lq-app {
 		display: grid;
 		grid-template-columns: var(--side-w) 4px minmax(0, 1fr);
-		height: var(--ca-vh, 100vh);
+		flex: 1;
+		min-height: 0;
 		overflow: hidden;
 	}
 	.lq-app--narrow {

@@ -7,6 +7,7 @@ mod model;
 mod profiles;
 mod transfer;
 mod updates;
+mod window;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -435,6 +436,11 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .manage(update_policy)
+        .manage(window::FirstShow::default())
+        .setup(|app| {
+            window::start_fallback(app.handle());
+            Ok(())
+        })
         .manage(AppState {
             profiles,
             sessions: RwLock::new(HashMap::new()),
@@ -473,6 +479,7 @@ pub fn run() {
             ai_activity,
             ai_activity_clear,
             updates::update_policy,
+            window::window_painted,
         ])
         .run(tauri::generate_context!())
         .expect("error while starting LowQuery");
