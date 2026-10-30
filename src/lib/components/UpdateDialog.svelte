@@ -74,6 +74,9 @@
 					closes every session; uncommitted changes are rolled back.
 				</Alert>
 			{/if}
+			{#if updates.passwordHint}
+				<Alert severity="info">{updates.passwordHint}</Alert>
+			{/if}
 			{#if updates.installing}
 				<Progress
 					value={updates.progress === null ? undefined : Math.round(updates.progress * 100)}

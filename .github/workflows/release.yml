@@ -83,6 +83,10 @@ jobs:
           Compress-Archive -Path "$portable/*" -DestinationPath "$portable.zip" -Force
           Remove-Item -Recurse -Force $portable
 
+          # Portable copies update themselves from this archive.
+          bun run tauri signer sign --app-version $env:VERSION "$portable.zip"
+          if ($LASTEXITCODE -ne 0) { throw "Signing $portable.zip failed." }
+
           Get-ChildItem out -File -Exclude *.sig | ForEach-Object {
             $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$hash  $($_.Name)" | Set-Content "$($_.FullName).sha256" -Encoding ascii -NoNewline
@@ -149,6 +153,12 @@ jobs:
           "
           cp "$(find "$arch_build" -name '*.pkg.tar.zst' | head -n 1)" "out/LowQuery-${VERSION}-linux-x86_64.pkg.tar.zst"
           sudo rm -rf "$arch_build"
+
+          # Each Linux format updates from its own signed file (latest.json has
+          # one entry per format), so sign the ones Tauri does not sign.
+          for f in out/*.deb out/*.rpm out/*.pkg.tar.zst out/*-portable.tar.gz; do
+            bun run tauri signer sign --app-version "$VERSION" "$f"
+          done
 
           (cd out && for f in *; do [[ "$f" == *.sig ]] || sha256sum "$f" > "$f.sha256"; done)
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7

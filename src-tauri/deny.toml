@@ -12,10 +12,12 @@ unmaintained = "workspace"
 yanked = "warn"
 ignore = [
     # zip < 9 extraction (SUID bits, symlinks out of the target, permissions
-    # through symlinks). Only tauri-plugin-updater 2.14 (the latest) uses zip,
-    # pinned to 4.x, and it unzips Windows update packages only after checking
-    # their minisign signature against LowQuery's update key, so a crafted
-    # archive needs that key. Drop these when the plugin moves to zip >= 9.
+    # through symlinks). zip is pinned to 4.x by tauri-plugin-updater 2.14 (the
+    # latest), which unzips Windows update packages, and LowQuery reads
+    # LowQuery.exe from the portable .zip into memory (nothing is extracted to
+    # disk). Both happen only after checking the minisign signature against
+    # LowQuery's update key, so a crafted archive needs that key. Drop these
+    # when the plugin moves to zip >= 9.
     { id = "RUSTSEC-2026-0367", reason = "zip via tauri-plugin-updater; packages are signature-checked before extraction" },
     { id = "RUSTSEC-2026-0368", reason = "zip via tauri-plugin-updater; packages are signature-checked before extraction" },
     { id = "RUSTSEC-2026-0369", reason = "zip via tauri-plugin-updater; packages are signature-checked before extraction" },

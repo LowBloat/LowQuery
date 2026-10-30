@@ -20,9 +20,15 @@ def build_manifest(version, repo, assets, notes):
     # Installed Windows copies update with the installer they came from.
     signed(["windows-x86_64", "windows-x86_64-nsis"], f"LowQuery-{version}-windows-x64-setup.exe")
     signed(["windows-x86_64-msi"], f"LowQuery-{version}-windows-x64.msi")
+    signed(["windows-x86_64-portable"], f"LowQuery-{version}-windows-x64-portable.zip")
     signed(["darwin-aarch64", "darwin-x86_64"], f"LowQuery-{version}-macos-universal.app.tar.gz")
-    # No generic Linux key: .deb and .rpm installs must never receive an AppImage.
+    # One key per Linux format and no generic one: each installation must
+    # receive the format it was installed from (see src-tauri/src/updates.rs).
     signed(["linux-x86_64-appimage"], f"LowQuery-{version}-linux-x64.AppImage")
+    signed(["linux-x86_64-deb"], f"LowQuery-{version}-linux-x64.deb")
+    signed(["linux-x86_64-rpm"], f"LowQuery-{version}-linux-x64.rpm")
+    signed(["linux-x86_64-pacman"], f"LowQuery-{version}-linux-x86_64.pkg.tar.zst")
+    signed(["linux-x86_64-portable"], f"LowQuery-{version}-linux-x64-portable.tar.gz")
 
     return {
         "version": version,
@@ -47,7 +53,11 @@ if __name__ == "__main__":
         notes = result.stdout.strip()
     assets = Path("release-assets")
     doc = build_manifest(version, repo, assets, notes)
-    required = {"windows-x86_64", "darwin-aarch64", "linux-x86_64-appimage"}
+    required = {
+        "windows-x86_64", "windows-x86_64-portable", "darwin-aarch64",
+        "linux-x86_64-appimage", "linux-x86_64-deb", "linux-x86_64-rpm", "linux-x86_64-pacman",
+        "linux-x86_64-portable",
+    }
     missing = required - doc["platforms"].keys()
     if missing:
         raise SystemExit(f"Signed updater artifacts missing for: {sorted(missing)}")

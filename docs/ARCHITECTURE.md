@@ -26,6 +26,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | --- | --- |
 | `lib.rs` | Tauri commands, session registry, password resolution |
 | `window.rs` | The main window starts hidden and is shown once the page has painted (`window_painted`), with a five-second fallback; `tauri.macos.conf.json` keeps the native traffic lights |
+| `updates.rs` | Updates from GitHub Releases: detects how this copy was installed (installer, AppImage, `.deb`, `.rpm`, pacman, portable) and installs the signed file of the same format from `latest.json`, through the updater plugin, `pkexec pacman -U` or by replacing the executable |
 | `profiles.rs` | `connections.json` in the user config folder; passwords in the keychain (`keyring`) |
 | `model.rs` | Serializable types shared with the interface |
 | `error.rs` | `AppError` with kind, native code, position, detail and hint |

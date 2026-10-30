@@ -424,18 +424,14 @@ pub fn run() {
     let profiles = ProfileStore::new(dirs.config_dir().to_path_buf())
         .expect("could not create the configuration directory");
 
-    let update_policy = updates::UpdatePolicy::detect();
-    let mut updater = tauri_plugin_updater::Builder::new();
-    if let Some(target) = &update_policy.target {
-        updater = updater.target(target);
-    }
+    updates::remove_replaced_executable();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .plugin(updater.build())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(update_policy)
+        .manage(updates::Updates::default())
         .manage(window::FirstShow::default())
         .setup(|app| {
             window::start_fallback(app.handle());
@@ -479,6 +475,8 @@ pub fn run() {
             ai_activity,
             ai_activity_clear,
             updates::update_policy,
+            updates::check_update,
+            updates::install_update,
             window::window_painted,
         ])
         .run(tauri::generate_context!())

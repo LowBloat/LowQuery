@@ -82,7 +82,7 @@ The [latest release](https://github.com/LowBloat/LowQuery/releases/latest) inclu
 gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQuery
 ```
 
-**Updates.** Installed copies on Windows, macOS and AppImage update themselves: LowQuery checks for a new release in the background, shows what changed and installs it when you choose **Install and restart**. Updates are signed and verified before installation. `.deb`, `.rpm` and portable copies are told when a new version is out and link to the download.
+**Updates.** Every copy of LowQuery updates itself from GitHub Releases: it checks for a new release in the background, shows what changed and, when you choose **Install and restart**, downloads the same format you installed, verifies its signature and installs it. The Windows installers, macOS, the AppImage and the portable copies replace themselves; `.deb`, `.rpm` and Arch packages are installed with `dpkg`, `rpm` or `pacman` after the system asks for your password, so the package manager keeps track of them. Only a copy in a folder it cannot write to, or a package from another source under `/usr` or `/opt`, gets a download link instead.
 
 **First launch on Windows and macOS.** The installers are not code-signed yet, so the system warns on first launch:
 
