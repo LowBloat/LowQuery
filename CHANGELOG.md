@@ -4,6 +4,8 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-10-30
+
 ### Added
 - **Apache Cassandra** (CQL) as a connection type, on the `scylla` native driver with TLS through rustls; it works with Cassandra 3.x, 4.x and 5.x.
   - Contact points (several, comma separated), port, optional user and password (kept in the OS credential store), default keyspace, local datacenter and TLS mode.
@@ -171,7 +173,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LowBloat/LowQuery/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/LowBloat/LowQuery/compare/v0.5.0...v0.5.1

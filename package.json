@@ -1,6 +1,6 @@
 {
   "name": "lowquery",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "LowQuery: a lightweight multi-database SQL client (Oracle and PostgreSQL).",
   "homepage": "https://github.com/LowBloat/LowQuery",
   "repository": {
