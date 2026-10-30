@@ -59,6 +59,13 @@ quick-xml = "0.42"
 # Oracle homes registered by Windows installers.
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
+# Portable updates: LowQuery.exe from the signed .zip (zip 4 is already used by the updater).
+zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+# Portable updates: LowQuery from the signed .tar.gz.
+[target.'cfg(target_os = "linux")'.dependencies]
+flate2 = "1"
+tar = "0.4"
 
 [profile.release]
 codegen-units = 1

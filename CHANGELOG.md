@@ -4,6 +4,9 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Changed
+- Every Linux format now updates itself, not only the AppImage: `.deb` and `.rpm` installs update through `dpkg`/`rpm`, the Arch package (and the AUR's `lowquery-bin`) through `pacman`, after the system asks for the password, and portable copies on Linux and Windows replace their own executable. Each install receives the signed file of its own format; releases sign the `.deb`, `.rpm`, `.pkg.tar.zst` and portable archives and list them in `latest.json`. Copies installed before this version still show the download link once.
+
 ## [0.5.3] - 2026-10-24
 
 ### Added

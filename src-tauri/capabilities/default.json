@@ -13,7 +13,6 @@
     "core:window:allow-start-dragging",
     "dialog:allow-save",
     "dialog:allow-open",
-    "updater:default",
     "process:allow-restart",
     "process:allow-exit",
     "opener:default"
