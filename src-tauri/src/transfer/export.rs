@@ -61,8 +61,9 @@ pub struct ExportSummary {
     pub warnings: Vec<String>,
 }
 
-/// Kinds a schema export scripts, in the order they are created.
-const STRUCTURE_ORDER: [&str; 10] = [
+/// Kinds a schema export scripts, in the order they are created. Cassandra
+/// indexes are not listed: the DDL of their table already ends with them.
+const STRUCTURE_ORDER: [&str; 11] = [
     "sequence",
     "type",
     "table",
@@ -70,6 +71,7 @@ const STRUCTURE_ORDER: [&str; 10] = [
     "view",
     "matview",
     "function",
+    "aggregate",
     "procedure",
     "package",
     "synonym",
@@ -84,6 +86,7 @@ pub async fn export(
     progress: &(dyn Fn(Progress) + Sync),
 ) -> AppResult<ExportSummary> {
     let whole = req.objects.is_none();
+    let e = s.engine();
     let mut objects = match &req.objects {
         Some(list) => list.clone(),
         None => s.list_objects(&req.schema).await?,
@@ -94,6 +97,9 @@ pub async fn export(
         .iter()
         .filter(|o| {
             if whole {
+                o.kind == "table"
+            } else if e == Engine::Cassandra && req.format == ExportFormat::Sql {
+                // Materialized views cannot be INSERTed into.
                 o.kind == "table"
             } else {
                 DATA_KINDS.contains(&o.kind.as_str())
@@ -309,16 +315,19 @@ async fn write_table_rows(
 ) -> AppResult<u64> {
     let e = s.engine();
     let generated = catalog::generated_columns(s, schema, table).await?;
-    let columns: Vec<String> = s
+    let table_columns: Vec<_> = s
         .list_columns(schema, table)
         .await?
         .into_iter()
-        .map(|c| c.name)
-        .filter(|n| !generated.contains(n))
+        .filter(|c| !generated.contains(&c.name))
         .collect();
-    if columns.is_empty() {
+    if table_columns.is_empty() {
         return Ok(0);
     }
+    // CQL literals depend on the column's type; counters need the key.
+    let types: Vec<String> = table_columns.iter().map(|c| c.type_name.clone()).collect();
+    let keys: Vec<bool> = table_columns.iter().map(|c| c.primary_key).collect();
+    let columns: Vec<String> = table_columns.into_iter().map(|c| c.name).collect();
     let target = sql::qualified(e, schema, table);
     let quoted: Vec<String> = columns.iter().map(|c| sql::ident(e, c)).collect();
     let ids = catalog::identity_columns(s, schema, table).await?;
@@ -343,6 +352,8 @@ async fn write_table_rows(
                 table: &target,
                 columns: &quoted,
                 kinds: &kinds,
+                types: &types,
+                keys: &keys,
             };
             sql::write_inserts(w, &t, batch)?;
             Ok(())

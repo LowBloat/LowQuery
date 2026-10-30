@@ -1129,6 +1129,183 @@
 					"sql": "DROP TABLE lq_schema.lq_ddl_parent"
 				}
 			]
+		},
+		"cassandra": {
+			"schema": "lq_cql",
+			"cleanup": [
+				"DROP INDEX lq_cql.ix_lq_ddl_items_name",
+				"DROP TABLE lq_cql.lq_ddl_items",
+				"DROP TYPE lq_cql.lq_ddl_addr",
+				"DROP KEYSPACE lq_ddl_schema"
+			],
+			"steps": [
+				{
+					"label": "create type",
+					"sql": "CREATE TYPE lq_cql.lq_ddl_addr (street text, zip int)"
+				},
+				{
+					"label": "type DDL",
+					"ddl": {
+						"name": "lq_ddl_addr",
+						"kind": "type",
+						"contains": "lq_ddl_addr"
+					}
+				},
+				{
+					"label": "create table",
+					"sql": "CREATE TABLE lq_cql.lq_ddl_items (\n    tenant text,\n    day int,\n    seq int,\n    name text,\n    price decimal,\n    note text,\n    obsolete text,\n    tags set<text>,\n    addr frozen<lq_ddl_addr>,\n    PRIMARY KEY (tenant, day, seq)\n)"
+				},
+				{
+					"label": "create index",
+					"sql": "CREATE INDEX ix_lq_ddl_items_name ON lq_cql.lq_ddl_items (name)"
+				},
+				{
+					"label": "insert rows (1)",
+					"sql": "INSERT INTO lq_cql.lq_ddl_items (tenant, day, seq, name, price, note, obsolete, tags, addr) VALUES ('a', 1, 1, 'a', 1.5, 'n1', 'z', {'x', 'y'}, {street: 'Main', zip: 12345})"
+				},
+				{
+					"label": "insert rows (2)",
+					"sql": "INSERT INTO lq_cql.lq_ddl_items (tenant, day, seq, name, price, note, obsolete, tags, addr) VALUES ('a', 1, 2, 'b', 2.5, NULL, 'z', NULL, NULL)"
+				},
+				{
+					"label": "collections and UDTs print as CQL literals",
+					"sql": "SELECT tags, addr FROM lq_cql.lq_ddl_items WHERE tenant = 'a' AND day = 1 AND seq = 1",
+					"rows": [
+						"{'x', 'y'}"
+					]
+				},
+				{
+					"label": "secondary index lookup",
+					"sql": "SELECT seq FROM lq_cql.lq_ddl_items WHERE name = 'b'",
+					"rows": [
+						"2"
+					]
+				},
+				{
+					"label": "alter table (1)",
+					"sql": "ALTER TABLE lq_cql.lq_ddl_items DROP obsolete"
+				},
+				{
+					"label": "alter table (2)",
+					"sql": "ALTER TABLE lq_cql.lq_ddl_items RENAME seq TO pos"
+				},
+				{
+					"label": "alter table (3)",
+					"sql": "ALTER TABLE lq_cql.lq_ddl_items ADD qty int"
+				},
+				{
+					"label": "insert with the new columns",
+					"sql": "INSERT INTO lq_cql.lq_ddl_items (tenant, day, pos, qty) VALUES ('a', 2, 3, 7)"
+				},
+				{
+					"label": "added column",
+					"sql": "SELECT qty FROM lq_cql.lq_ddl_items WHERE tenant = 'a' AND day = 2",
+					"rows": [
+						"7"
+					]
+				},
+				{
+					"label": "renamed clustering column kept its values",
+					"sql": "SELECT pos FROM lq_cql.lq_ddl_items WHERE tenant = 'a' AND day = 1",
+					"rows": [
+						"1",
+						"2"
+					]
+				},
+				{
+					"label": "rows",
+					"sql": "SELECT COUNT(*) FROM lq_cql.lq_ddl_items",
+					"rows": [
+						"3"
+					]
+				},
+				{
+					"label": "index DDL",
+					"ddl": {
+						"name": "ix_lq_ddl_items_name",
+						"kind": "index",
+						"contains": "ix_lq_ddl_items_name"
+					}
+				},
+				{
+					"label": "table DDL round trip",
+					"roundTrip": {
+						"name": "lq_ddl_items",
+						"kind": "table",
+						"drop": "DROP TABLE lq_cql.lq_ddl_items"
+					}
+				},
+				{
+					"label": "recreated table is empty",
+					"sql": "SELECT COUNT(*) FROM lq_cql.lq_ddl_items",
+					"rows": [
+						"0"
+					]
+				},
+				{
+					"label": "recreated index works",
+					"sql": "SELECT pos FROM lq_cql.lq_ddl_items WHERE name = 'b'",
+					"rows": []
+				},
+				{
+					"label": "recreated index DDL",
+					"ddl": {
+						"name": "ix_lq_ddl_items_name",
+						"kind": "index",
+						"contains": "ix_lq_ddl_items_name"
+					}
+				},
+				{
+					"label": "fill again",
+					"sql": "INSERT INTO lq_cql.lq_ddl_items (tenant, day, pos, name) VALUES ('b', 1, 1, 'c')"
+				},
+				{
+					"label": "filled",
+					"sql": "SELECT COUNT(*) FROM lq_cql.lq_ddl_items",
+					"rows": [
+						"1"
+					]
+				},
+				{
+					"label": "truncate",
+					"sql": "TRUNCATE TABLE lq_cql.lq_ddl_items"
+				},
+				{
+					"label": "truncated",
+					"sql": "SELECT COUNT(*) FROM lq_cql.lq_ddl_items",
+					"rows": [
+						"0"
+					]
+				},
+				{
+					"label": "drop index",
+					"sql": "DROP INDEX lq_cql.ix_lq_ddl_items_name"
+				},
+				{
+					"label": "drop table",
+					"sql": "DROP TABLE lq_cql.lq_ddl_items"
+				},
+				{
+					"label": "drop type",
+					"sql": "DROP TYPE lq_cql.lq_ddl_addr"
+				},
+				{
+					"label": "create keyspace",
+					"sql": "CREATE KEYSPACE lq_ddl_schema WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"
+				},
+				{
+					"label": "keyspace DDL",
+					"ddl": {
+						"name": "lq_ddl_schema",
+						"kind": "keyspace",
+						"contains": "lq_ddl_schema"
+					}
+				},
+				{
+					"label": "drop keyspace",
+					"sql": "DROP KEYSPACE lq_ddl_schema"
+				}
+			]
 		}
 	}
 }

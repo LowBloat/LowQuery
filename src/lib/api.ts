@@ -38,6 +38,8 @@ export interface ConnectionProfile {
 	windowsAuth: boolean;
 	/** SQLite: create the file when it does not exist. */
 	createFile: boolean;
+	/** Cassandra: local datacenter; empty means every node the cluster reports. */
+	datacenter: string;
 	/** What AI agents may do through `lowquery mcp`. */
 	aiAccess: AiAccess;
 }
@@ -206,6 +208,8 @@ export interface DbColumn {
 	primaryKey: boolean;
 	/** Default as an SQL expression. */
 	defaultValue?: string | null;
+	/** Cassandra: "partition", "clustering", "static" or "regular"; null elsewhere. */
+	keyRole?: "partition" | "clustering" | "static" | "regular" | null;
 }
 
 export type ExportFormat = "sql" | "csv" | "csv-excel" | "json";
@@ -303,6 +307,7 @@ const DEFAULTS: Partial<Record<Engine, { database: string; user: string }>> = {
 	mariadb: { database: "", user: "root" },
 	sqlserver: { database: "master", user: "sa" },
 	redis: { database: "0", user: "" },
+	cassandra: { database: "", user: "" },
 };
 
 export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
@@ -316,7 +321,7 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		database: DEFAULTS[engine]?.database ?? "",
 		user: DEFAULTS[engine]?.user ?? "",
 		savePassword: true,
-		sslMode: "prefer",
+		sslMode: engine === "cassandra" ? "disable" : "prefer",
 		oracleConnectType: "service",
 		connectString: "",
 		tnsAlias: "",
@@ -325,6 +330,7 @@ export function emptyProfile(engine: Engine = "postgres"): ConnectionProfile {
 		instance: "",
 		windowsAuth: false,
 		createFile: false,
+		datacenter: "",
 		aiAccess: "off",
 	};
 }

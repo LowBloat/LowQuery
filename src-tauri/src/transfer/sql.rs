@@ -2,12 +2,18 @@
 //! statements in each database's syntax. Values arrive as the drivers format
 //! them (see the `cell` functions), and every literal reads back as the same
 //! value in the same database.
+//!
+//! CQL (Cassandra) literals depend on the column's type, not only its kind
+//! (a uuid is bare, text is quoted, both are [`ValueKind::Text`]), so they
+//! come from [`literal_typed`], which hands the type to the driver's
+//! `cql_literal`.
 
 use std::io::{self, Write};
 
 use crate::model::{Engine, ValueKind};
 
-/// Always-quoted identifier: exports keep names exactly as the catalog has them.
+/// Always-quoted identifier: exports keep names exactly as the catalog has them
+/// (CQL too: `"` doubled, so case-sensitive names survive).
 pub fn ident(engine: Engine, name: &str) -> String {
     match engine {
         Engine::Mysql | Engine::Mariadb => format!("`{}`", name.replace('`', "``")),
@@ -51,6 +57,43 @@ pub fn kind_of_type(type_name: &str) -> ValueKind {
     } else {
         ValueKind::Text
     }
+}
+
+/// The kind of value a column holds, from its CQL type as `system_schema`
+/// writes it (`int`, `frozen<map<text, int>>`, `vector<float, 3>`...):
+/// collections, tuples, UDTs and vectors are [`ValueKind::Other`].
+pub fn kind_of_cql_type(type_name: &str) -> ValueKind {
+    match cql_native_type(type_name).as_str() {
+        "tinyint" | "smallint" | "int" | "bigint" | "varint" | "decimal" | "float" | "double"
+        | "counter" => ValueKind::Number,
+        "boolean" => ValueKind::Bool,
+        "timestamp" | "date" | "time" | "duration" => ValueKind::Temporal,
+        "blob" => ValueKind::Binary,
+        "text" | "varchar" | "ascii" | "uuid" | "timeuuid" | "inet" => ValueKind::Text,
+        _ => ValueKind::Other,
+    }
+}
+
+/// The kind of a column of `engine` from its declared type.
+pub fn column_kind(engine: Engine, type_name: &str) -> ValueKind {
+    if engine == Engine::Cassandra {
+        kind_of_cql_type(type_name)
+    } else {
+        kind_of_type(type_name)
+    }
+}
+
+/// A CQL type name lowercased and without `frozen<...>` wrappers; what is
+/// left is a native type name (`int`) or a collection, tuple, vector or UDT.
+fn cql_native_type(type_name: &str) -> String {
+    let mut t = type_name.trim().to_ascii_lowercase();
+    while let Some(inner) = t
+        .strip_prefix("frozen<")
+        .and_then(|rest| rest.strip_suffix('>'))
+    {
+        t = inner.trim().to_string();
+    }
+    t
 }
 
 fn is_number(v: &str) -> bool {
@@ -123,8 +166,20 @@ fn string_literal(engine: Engine, v: &str) -> String {
     }
 }
 
-/// A value as a literal of `engine`, for a column of `kind`.
+/// A value as a literal of `engine`, for a column of `kind`. CQL columns
+/// should go through [`literal_typed`]; here a CQL value is written as the
+/// plain CQL type of its kind (`Other` cannot be told apart: it is quoted).
 pub fn literal(engine: Engine, kind: ValueKind, value: Option<&str>) -> String {
+    if engine == Engine::Cassandra {
+        let ty = match kind {
+            ValueKind::Number => "decimal",
+            ValueKind::Bool => "boolean",
+            ValueKind::Binary => "blob",
+            ValueKind::Temporal => "timestamp",
+            ValueKind::Text | ValueKind::Json | ValueKind::Other => "text",
+        };
+        return literal_typed(engine, kind, ty, value);
+    }
     let Some(v) = value else {
         return "NULL".into();
     };
@@ -159,6 +214,25 @@ pub fn literal(engine: Engine, kind: ValueKind, value: Option<&str>) -> String {
     }
 }
 
+/// A value as a literal of `engine`, for a column of `kind` and declared
+/// type `type_name` (`DbColumn.type_name`, the same text as
+/// `ColumnInfo.type_name`). Only CQL reads the type: numbers, booleans,
+/// uuids, blobs and durations are bare, text and temporal values quoted, and
+/// collections, tuples, UDTs and vectors (whose cell text is already a CQL
+/// literal) are kept as they are; the driver's `cql_literal` decides.
+pub fn literal_typed(
+    engine: Engine,
+    kind: ValueKind,
+    type_name: &str,
+    value: Option<&str>,
+) -> String {
+    if engine == Engine::Cassandra {
+        crate::drivers::cassandra::cql_literal(type_name, value)
+    } else {
+        literal(engine, kind, value)
+    }
+}
+
 /// Where rows go: the table and the columns written, with their kinds.
 pub struct InsertTarget<'a> {
     pub engine: Engine,
@@ -167,6 +241,12 @@ pub struct InsertTarget<'a> {
     /// Quoted column names.
     pub columns: &'a [String],
     pub kinds: &'a [ValueKind],
+    /// Declared types of the columns, as `DbColumn.type_name`. Only CQL reads
+    /// them; other engines may pass an empty slice.
+    pub types: &'a [String],
+    /// Whether each column is part of the primary key. Only CQL reads it (to
+    /// address counter updates); may be empty.
+    pub keys: &'a [bool],
 }
 
 /// Rows per INSERT where the engine takes several (SQL Server allows 1000).
@@ -199,15 +279,21 @@ pub fn insert_statements(t: &InsertTarget<'_>, rows: &[Vec<Option<String>>]) -> 
             ""
         }
     );
+    let ty = |i: usize| t.types.get(i).map_or("", String::as_str);
+    if t.engine == Engine::Cassandra && (0..t.columns.len()).any(|i| is_counter(ty(i))) {
+        return counter_updates(t, rows);
+    }
     let tuple = |row: &Vec<Option<String>>| {
         let values: Vec<String> = row
             .iter()
             .zip(t.kinds)
-            .map(|(v, k)| literal(t.engine, *k, v.as_deref()))
+            .enumerate()
+            .map(|(i, (v, k))| literal_typed(t.engine, *k, ty(i), v.as_deref()))
             .collect();
         format!("({})", values.join(", "))
     };
-    let per = if t.engine == Engine::Oracle {
+    // CQL has no multi-row INSERT.
+    let per = if matches!(t.engine, Engine::Oracle | Engine::Cassandra) {
         1
     } else {
         ROWS_PER_INSERT
@@ -220,6 +306,64 @@ pub fn insert_statements(t: &InsertTarget<'_>, rows: &[Vec<Option<String>>]) -> 
             } else {
                 format!("{head} VALUES\n{}", values.join(",\n"))
             }
+        })
+        .collect()
+}
+
+fn is_counter(type_name: &str) -> bool {
+    cql_native_type(type_name) == "counter"
+}
+
+/// Rows of a CQL table with counter columns. Counters cannot be INSERTed, so
+/// each row becomes `UPDATE t SET c = c + n WHERE key = ...`: loaded into an
+/// empty table (a fresh export script, or an import that deleted the rows)
+/// the counters hold the exported values, and on a table that has rows the
+/// values are added to them. A row without a counter value has nothing to
+/// add and is left out. With no key columns known no UPDATE can address the
+/// row, so INSERTs are written and the server refuses them with its message.
+fn counter_updates(t: &InsertTarget<'_>, rows: &[Vec<Option<String>>]) -> Vec<String> {
+    let ty = |i: usize| t.types.get(i).map_or("", String::as_str);
+    let key = |i: usize| t.keys.get(i).copied().unwrap_or(false);
+    let n = t.columns.len();
+    let lit = |row: &[Option<String>], i: usize| {
+        let kind = t.kinds.get(i).copied().unwrap_or(ValueKind::Other);
+        literal_typed(t.engine, kind, ty(i), row.get(i).and_then(|v| v.as_deref()))
+    };
+    if !(0..n).any(key) {
+        let head = format!("INSERT INTO {} ({})", t.table, t.columns.join(", "));
+        return rows
+            .iter()
+            .map(|row| {
+                let values: Vec<String> = (0..n).map(|i| lit(row, i)).collect();
+                format!("{head} VALUES ({})", values.join(", "))
+            })
+            .collect();
+    }
+    rows.iter()
+        .filter_map(|row| {
+            let sets: Vec<String> = (0..n)
+                .filter(|&i| is_counter(ty(i)) && row.get(i).is_some_and(Option::is_some))
+                .map(|i| {
+                    let (c, v) = (&t.columns[i], lit(row, i));
+                    match v.strip_prefix('-') {
+                        Some(abs) => format!("{c} = {c} - {abs}"),
+                        None => format!("{c} = {c} + {v}"),
+                    }
+                })
+                .collect();
+            if sets.is_empty() {
+                return None;
+            }
+            let wheres: Vec<String> = (0..n)
+                .filter(|&i| key(i))
+                .map(|i| format!("{} = {}", t.columns[i], lit(row, i)))
+                .collect();
+            Some(format!(
+                "UPDATE {} SET {} WHERE {}",
+                t.table,
+                sets.join(", "),
+                wheres.join(" AND ")
+            ))
         })
         .collect()
 }
@@ -347,6 +491,8 @@ mod tests {
             table: "\"s\".\"t\"",
             columns: &cols,
             kinds: &kinds,
+            types: &[],
+            keys: &[],
         };
         assert_eq!(
             insert_statements(&t, &rows),
@@ -357,5 +503,222 @@ mod tests {
             ..t
         };
         assert_eq!(insert_statements(&t, &rows).len(), 2);
+    }
+
+    fn cql(kind: ValueKind, ty: &str, v: &str) -> String {
+        literal_typed(Engine::Cassandra, kind, ty, Some(v))
+    }
+
+    #[test]
+    fn cql_identifiers_and_text() {
+        assert_eq!(ident(Engine::Cassandra, "My\"Tbl"), "\"My\"\"Tbl\"");
+        assert_eq!(qualified(Engine::Cassandra, "ks", "t"), "\"ks\".\"t\"");
+        assert_eq!(text(Engine::Cassandra, "it's"), "'it''s'");
+    }
+
+    #[test]
+    fn cql_numbers_and_booleans_are_bare() {
+        use ValueKind::{Bool, Number};
+        assert_eq!(cql(Number, "int", "42"), "42");
+        assert_eq!(
+            cql(Number, "varint", "-123456789012345678901234567890"),
+            "-123456789012345678901234567890"
+        );
+        assert_eq!(
+            cql(Number, "decimal", "1234567890.0987654321"),
+            "1234567890.0987654321"
+        );
+        assert_eq!(cql(Number, "double", "1.5e-10"), "1.5e-10");
+        assert_eq!(cql(Number, "double", "NaN"), "NaN");
+        assert_eq!(cql(Number, "float", "-Infinity"), "-Infinity");
+        assert_eq!(cql(Number, "counter", "7"), "7");
+        assert_eq!(cql(Bool, "boolean", "true"), "true");
+        assert_eq!(cql(Bool, "boolean", "false"), "false");
+        assert_eq!(
+            literal_typed(Engine::Cassandra, ValueKind::Text, "text", None),
+            "null"
+        );
+    }
+
+    #[test]
+    fn cql_uuids_blobs_and_durations_are_bare() {
+        use ValueKind::{Binary, Temporal, Text};
+        let id = "123e4567-e89b-12d3-a456-426614174000";
+        assert_eq!(cql(Text, "uuid", id), id);
+        assert_eq!(cql(Text, "timeuuid", id), id);
+        // Same kind, but a text column: quoted.
+        assert_eq!(cql(Text, "text", id), format!("'{id}'"));
+        assert_eq!(cql(Binary, "blob", "0xDEADBEEF"), "0xDEADBEEF");
+        assert_eq!(cql(Binary, "blob", "0x"), "0x");
+        assert_eq!(
+            cql(Temporal, "duration", "1y2mo3d4h5m6s7ms8us9ns"),
+            "1y2mo3d4h5m6s7ms8us9ns"
+        );
+    }
+
+    #[test]
+    fn cql_text_and_temporal_are_quoted() {
+        use ValueKind::{Temporal, Text};
+        assert_eq!(
+            cql(Text, "text", "it's \\ a \"x\"\nline"),
+            "'it''s \\ a \"x\"\nline'"
+        );
+        assert_eq!(cql(Text, "ascii", "abc"), "'abc'");
+        assert_eq!(cql(Text, "varchar", "Ação ☃"), "'Ação ☃'");
+        assert_eq!(cql(Text, "inet", "10.0.0.1"), "'10.0.0.1'");
+        assert_eq!(
+            cql(Temporal, "timestamp", "2024-05-06 07:08:09.123+0000"),
+            "'2024-05-06 07:08:09.123+0000'"
+        );
+        assert_eq!(cql(Temporal, "date", "2024-05-06"), "'2024-05-06'");
+        assert_eq!(
+            cql(Temporal, "time", "07:08:09.123456789"),
+            "'07:08:09.123456789'"
+        );
+        // Without a type the kind decides.
+        assert_eq!(literal(Engine::Cassandra, Text, Some("a'b")), "'a''b'");
+        assert_eq!(
+            literal(Engine::Cassandra, ValueKind::Number, Some("5")),
+            "5"
+        );
+        assert_eq!(
+            literal(Engine::Cassandra, ValueKind::Bool, Some("true")),
+            "true"
+        );
+        assert_eq!(literal(Engine::Cassandra, Temporal, None), "null");
+    }
+
+    #[test]
+    fn cql_collections_tuples_udts_and_vectors_are_verbatim() {
+        for (ty, v) in [
+            ("list<int>", "[1, 2]"),
+            ("set<text>", "{'a', 'it''s ; here'}"),
+            ("map<text, int>", "{'a': 1, 'b': 2}"),
+            (
+                "frozen<map<text, frozen<list<int>>>>",
+                "{'a': [1], 'b': []}",
+            ),
+            ("tuple<int, text>", "(1, 'x')"),
+            ("frozen<address>", "{street: 'Main', zip: 12345}"),
+            ("vector<float, 3>", "[0.1, 0.2, 0.3]"),
+        ] {
+            assert_eq!(cql(ValueKind::Other, ty, v), v, "{ty}");
+        }
+    }
+
+    #[test]
+    fn cql_types_map_to_kinds() {
+        assert_eq!(kind_of_cql_type("int"), ValueKind::Number);
+        assert_eq!(kind_of_cql_type("varint"), ValueKind::Number);
+        assert_eq!(kind_of_cql_type("counter"), ValueKind::Number);
+        assert_eq!(kind_of_cql_type("boolean"), ValueKind::Bool);
+        assert_eq!(kind_of_cql_type("timestamp"), ValueKind::Temporal);
+        assert_eq!(kind_of_cql_type("duration"), ValueKind::Temporal);
+        assert_eq!(kind_of_cql_type("blob"), ValueKind::Binary);
+        assert_eq!(kind_of_cql_type("uuid"), ValueKind::Text);
+        assert_eq!(kind_of_cql_type("inet"), ValueKind::Text);
+        // `kind_of_type` would call these numbers and dates.
+        assert_eq!(kind_of_cql_type("list<int>"), ValueKind::Other);
+        assert_eq!(
+            kind_of_cql_type("frozen<map<text, timestamp>>"),
+            ValueKind::Other
+        );
+        assert_eq!(kind_of_cql_type("tuple<int, text>"), ValueKind::Other);
+        assert_eq!(kind_of_cql_type("vector<float, 3>"), ValueKind::Other);
+        assert_eq!(kind_of_cql_type("frozen<address>"), ValueKind::Other);
+        assert_eq!(
+            column_kind(Engine::Cassandra, "list<int>"),
+            ValueKind::Other
+        );
+        assert_eq!(column_kind(Engine::Postgres, "integer"), ValueKind::Number);
+    }
+
+    #[test]
+    fn cql_inserts_are_one_row_each() {
+        let cols = vec![
+            "\"id\"".to_string(),
+            "\"name\"".to_string(),
+            "\"tags\"".to_string(),
+        ];
+        let kinds = [ValueKind::Text, ValueKind::Text, ValueKind::Other];
+        let types = [
+            "uuid".to_string(),
+            "text".to_string(),
+            "set<text>".to_string(),
+        ];
+        let rows = vec![
+            vec![
+                Some("123e4567-e89b-12d3-a456-426614174000".into()),
+                Some("it's".into()),
+                Some("{'a', 'b'}".into()),
+            ],
+            vec![
+                Some("123e4567-e89b-12d3-a456-426614174001".into()),
+                None,
+                None,
+            ],
+        ];
+        let t = InsertTarget {
+            engine: Engine::Cassandra,
+            table: "\"ks\".\"t\"",
+            columns: &cols,
+            kinds: &kinds,
+            types: &types,
+            keys: &[true, false, false],
+        };
+        assert_eq!(
+            insert_statements(&t, &rows),
+            [
+                "INSERT INTO \"ks\".\"t\" (\"id\", \"name\", \"tags\") VALUES (123e4567-e89b-12d3-a456-426614174000, 'it''s', {'a', 'b'})",
+                "INSERT INTO \"ks\".\"t\" (\"id\", \"name\", \"tags\") VALUES (123e4567-e89b-12d3-a456-426614174001, null, null)",
+            ]
+        );
+    }
+
+    #[test]
+    fn cql_counter_tables_are_written_as_updates() {
+        let cols = vec![
+            "\"id\"".to_string(),
+            "\"seq\"".to_string(),
+            "\"hits\"".to_string(),
+            "\"misses\"".to_string(),
+        ];
+        let kinds = [
+            ValueKind::Text,
+            ValueKind::Number,
+            ValueKind::Number,
+            ValueKind::Number,
+        ];
+        let types = [
+            "text".to_string(),
+            "int".to_string(),
+            "counter".to_string(),
+            "counter".to_string(),
+        ];
+        let rows = vec![
+            vec![
+                Some("a'b".into()),
+                Some("1".into()),
+                Some("5".into()),
+                Some("-2".into()),
+            ],
+            vec![Some("c".into()), Some("2".into()), Some("9".into()), None],
+            vec![Some("d".into()), Some("3".into()), None, None],
+        ];
+        let t = InsertTarget {
+            engine: Engine::Cassandra,
+            table: "\"ks\".\"c\"",
+            columns: &cols,
+            kinds: &kinds,
+            types: &types,
+            keys: &[true, true, false, false],
+        };
+        assert_eq!(
+            insert_statements(&t, &rows),
+            [
+                "UPDATE \"ks\".\"c\" SET \"hits\" = \"hits\" + 5, \"misses\" = \"misses\" - 2 WHERE \"id\" = 'a''b' AND \"seq\" = 1",
+                "UPDATE \"ks\".\"c\" SET \"hits\" = \"hits\" + 9 WHERE \"id\" = 'c' AND \"seq\" = 2",
+            ]
+        );
     }
 }

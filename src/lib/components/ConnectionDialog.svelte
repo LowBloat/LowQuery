@@ -394,7 +394,18 @@
 									/>
 								</div>
 							{/if}
-							<TextField label="Host" bind:value={form.host} required autocomplete="off" />
+							{#if form.engine === "cassandra"}
+								<TextField
+									label="Contact points"
+									placeholder="10.0.0.1,10.0.0.2"
+									description="One or more hosts separated by commas; the driver discovers the rest of the cluster."
+									bind:value={form.host}
+									required
+									autocomplete="off"
+								/>
+							{:else}
+								<TextField label="Host" bind:value={form.host} required autocomplete="off" />
+							{/if}
 							<NumberField label="Port" bind:value={form.port} min={1} max={65535} />
 							{#if form.engine === "sqlserver"}
 								<TextField
@@ -412,10 +423,12 @@
 										: "Service name"
 									: form.engine === "redis"
 										? "Database index"
-										: "Database"}
+										: form.engine === "cassandra"
+											? "Default keyspace"
+											: "Database"}
 								placeholder={form.engine === "oracle"
 									? "FREEPDB1"
-									: form.engine === "mysql" || form.engine === "mariadb"
+									: form.engine === "mysql" || form.engine === "mariadb" || form.engine === "cassandra"
 										? "Optional"
 										: form.engine === "redis"
 											? "0"
@@ -424,10 +437,19 @@
 											: "postgres"}
 								bind:value={form.database}
 							/>
+							{#if form.engine === "cassandra"}
+								<TextField
+									label="Local datacenter"
+									placeholder="Optional, e.g. datacenter1"
+									description="Requests go to this datacenter's nodes only. Leave empty to use every node."
+									bind:value={form.datacenter}
+									autocomplete="off"
+								/>
+							{/if}
 						{/if}
 						{#if form.engine !== "oracle"}
 							<Select
-								label={form.engine === "sqlserver" ? "Encryption" : form.engine === "redis" ? "TLS" : "SSL"}
+								label={form.engine === "sqlserver" ? "Encryption" : form.engine === "redis" || form.engine === "cassandra" ? "TLS" : "SSL"}
 								options={sslOptions}
 								bind:value={form.sslMode}
 							/>
@@ -449,7 +471,7 @@
 						{#if needsCredentials}
 							<TextField
 								label={form.engine === "redis" ? "User (ACL)" : "User"}
-								placeholder={form.engine === "redis" ? "Optional, default user" : ""}
+								placeholder={form.engine === "redis" ? "Optional, default user" : form.engine === "cassandra" ? "Optional, when authentication is enabled" : ""}
 								bind:value={form.user}
 								autocomplete="off"
 							/>

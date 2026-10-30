@@ -6,8 +6,9 @@
  * After changing `ddl.ts`, regenerate the file with
  * `LQ_UPDATE_FIXTURES=1 bun test src/lib/sql/ddl.fixtures.test.ts`.
  *
- * `lq_schema` (`LQ_SCHEMA` in Oracle) stands for the test schema; the Rust
- * side replaces it.
+ * `lq_schema` (`LQ_SCHEMA` in Oracle, `lq_cql` in Cassandra) stands for the
+ * test schema; the Rust side replaces it. The Cassandra keyspace must exist
+ * before the steps run; the fixtures create and drop only `lq_ddl_schema`.
  */
 import { expect, it } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -193,11 +194,103 @@ function build(d: Dialect) {
 	return { schema, cleanup, steps };
 }
 
+/**
+ * Cassandra has no views fixtures, rename, duplicate, defaults or foreign
+ * keys, and user-defined functions are off by default, so it gets its own
+ * scenario: types, a table with collections and a UDT, clustering rename,
+ * ADD and DROP column, an index, TRUNCATE and keyspaces.
+ */
+function buildCassandra() {
+	const e: Engine = "cassandra";
+	const schema = "lq_cql";
+	const tbl = (s: string) => qualified(schema, s, e);
+	const q = (s: string) => quoteIdent(s, e);
+	const items = "lq_ddl_items";
+	const index = "ix_lq_ddl_items_name";
+	const steps: Step[] = [];
+	const run = (label: string, sqls: string[]) => sqls.forEach((sql, i) => steps.push({ label: sqls.length > 1 ? `${label} (${i + 1})` : label, sql }));
+	const check = (label: string, sql: string, rows: (string | number)[]) => steps.push({ label, sql, rows: rows.map(String) });
+
+	const cleanup = [
+		...dropObjectSql(schema, index, "index", e),
+		...dropObjectSql(schema, items, "table", e),
+		...dropObjectSql(schema, "lq_ddl_addr", "type", e),
+		...dropSchemaSql("lq_ddl_schema", e),
+	];
+
+	run("create type", [`CREATE TYPE ${tbl("lq_ddl_addr")} (street text, zip int)`]);
+	steps.push({ label: "type DDL", ddl: { name: "lq_ddl_addr", kind: "type", contains: "lq_ddl_addr" } });
+
+	const before: ColumnSpec[] = [
+		col("tenant", "text", { primaryKey: true, keyRole: "partition" }),
+		col("day", "int", { primaryKey: true, keyRole: "clustering" }),
+		col("seq", "int", { primaryKey: true, keyRole: "clustering" }),
+		col("name", "text", { keyRole: "regular" }),
+		col("price", "decimal", { keyRole: "regular" }),
+		col("note", "text", { keyRole: "regular" }),
+		col("obsolete", "text", { keyRole: "regular" }),
+		col("tags", "set<text>", { keyRole: "regular" }),
+		col("addr", "frozen<lq_ddl_addr>", { keyRole: "regular" }),
+	];
+	const created = createTableSql(schema, items, before, e);
+	run("create table", created.statements);
+	run("create index", [createIndexSql(schema, items, "name", e)]);
+	const insert = (seq: number, name: string, note: string, tags: string, addr: string) =>
+		`INSERT INTO ${tbl(items)} (${q("tenant")}, ${q("day")}, ${q("seq")}, ${q("name")}, ${q("price")}, ${q("note")}, ${q("obsolete")}, ${q("tags")}, ${q("addr")}) VALUES ('a', 1, ${seq}, ${name}, ${seq + 0.5}, ${note}, 'z', ${tags}, ${addr})`;
+	run("insert rows", [insert(1, "'a'", "'n1'", "{'x', 'y'}", "{street: 'Main', zip: 12345}"), insert(2, "'b'", "NULL", "NULL", "NULL")]);
+	check("collections and UDTs print as CQL literals", `SELECT ${q("tags")}, ${q("addr")} FROM ${tbl(items)} WHERE ${q("tenant")} = 'a' AND ${q("day")} = 1 AND ${q("seq")} = 1`, ["{'x', 'y'}"]);
+	check("secondary index lookup", `SELECT ${q("seq")} FROM ${tbl(items)} WHERE ${q("name")} = 'b'`, [2]);
+
+	// Designer edits: drop a column, rename a clustering column (a regular
+	// column keeps its name), add a column.
+	const after: ColumnDraft[] = [
+		{ ...before[0], origin: before[0].name },
+		{ ...before[1], origin: before[1].name },
+		{ ...before[2], origin: before[2].name, name: "pos" },
+		{ ...before[3], origin: before[3].name },
+		{ ...before[4], origin: before[4].name },
+		{ ...before[5], origin: before[5].name, name: "remark" },
+		{ ...before[7], origin: before[7].name },
+		{ ...before[8], origin: before[8].name },
+		{ ...col("qty", "int"), origin: null },
+	];
+	const altered = alterTableSql(schema, items, before, after, e);
+	expect(altered.warnings).toEqual(["Cassandra renames only clustering columns; note keeps its name."]);
+	run("alter table", altered.statements);
+	run("insert with the new columns", [`INSERT INTO ${tbl(items)} (${q("tenant")}, ${q("day")}, ${q("pos")}, ${q("qty")}) VALUES ('a', 2, 3, 7)`]);
+	check("added column", `SELECT ${q("qty")} FROM ${tbl(items)} WHERE ${q("tenant")} = 'a' AND ${q("day")} = 2`, [7]);
+	check("renamed clustering column kept its values", `SELECT ${q("pos")} FROM ${tbl(items)} WHERE ${q("tenant")} = 'a' AND ${q("day")} = 1`, [1, 2]);
+	check("rows", countSql(schema, items, e), [3]);
+
+	steps.push({ label: "index DDL", ddl: { name: index, kind: "index", contains: index } });
+	steps.push({
+		label: "table DDL round trip",
+		roundTrip: { name: items, kind: "table", drop: dropObjectSql(schema, items, "table", e)[0] },
+	});
+	check("recreated table is empty", countSql(schema, items, e), [0]);
+	check("recreated index works", `SELECT ${q("pos")} FROM ${tbl(items)} WHERE ${q("name")} = 'b'`, []);
+	steps.push({ label: "recreated index DDL", ddl: { name: index, kind: "index", contains: index } });
+
+	run("fill again", [`INSERT INTO ${tbl(items)} (${q("tenant")}, ${q("day")}, ${q("pos")}, ${q("name")}) VALUES ('b', 1, 1, 'c')`]);
+	check("filled", countSql(schema, items, e), [1]);
+	run("truncate", truncateSql(schema, items, e));
+	check("truncated", countSql(schema, items, e), [0]);
+	run("drop index", dropObjectSql(schema, index, "index", e));
+	run("drop table", dropObjectSql(schema, items, "table", e));
+	run("drop type", dropObjectSql(schema, "lq_ddl_addr", "type", e));
+
+	run("create keyspace", createSchemaSql("lq_ddl_schema", e));
+	steps.push({ label: "keyspace DDL", ddl: { name: "lq_ddl_schema", kind: "keyspace", contains: "lq_ddl_schema" } });
+	run("drop keyspace", dropSchemaSql("lq_ddl_schema", e));
+	return { schema, cleanup, steps };
+}
+
 const PATH = new URL("./ddl.fixtures.json", import.meta.url);
 
 it("ddl.fixtures.json matches the SQL ddl.ts writes", () => {
 	const dialects: Record<string, ReturnType<typeof build>> = {};
 	for (const d of Object.keys(TYPES) as Dialect[]) dialects[d] = build(d);
+	dialects.cassandra = buildCassandra();
 	const text = JSON.stringify({ dialects }, null, "\t") + "\n";
 	if (process.env.LQ_UPDATE_FIXTURES) writeFileSync(PATH, text);
 	expect(readFileSync(PATH, "utf8").replaceAll("\r\n", "\n")).toBe(text);

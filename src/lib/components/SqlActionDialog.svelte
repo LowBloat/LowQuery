@@ -65,7 +65,7 @@
 			{/each}
 
 			<div class="lq-act__sql">
-				<span class="lq-act__label">{req.profile.engine === "redis" ? "Commands" : "SQL"}</span>
+				<span class="lq-act__label">{req.profile.engine === "redis" ? "Commands" : req.profile.engine === "cassandra" ? "CQL" : "SQL"}</span>
 				{#if sql}
 					<pre>{sql}</pre>
 				{:else}

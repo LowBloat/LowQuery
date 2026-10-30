@@ -646,7 +646,7 @@ pub(super) fn apply_jdbc(url: &str, p: &mut ConnectionProfile) -> Result<(), Url
         "jtds" if strip_prefix_ci(&rest, "jtds:sybase:").is_some() => {
             return Err(UrlError::Unsupported("Sybase".into()));
         }
-        "postgresql" | "mariadb" | "sqlserver" | "jtds" | "sqlite" => {}
+        "postgresql" | "mariadb" | "sqlserver" | "jtds" | "sqlite" | "cassandra" => {}
         other => return Err(UrlError::Unsupported(product_name(other))),
     }
     jdbc::apply_url(&format!("jdbc:{rest}"), p).map_err(UrlError::Invalid)
@@ -732,7 +732,6 @@ fn product_name(scheme: &str) -> String {
         "redshift" => "Amazon Redshift",
         "bigquery" => "BigQuery",
         "mongodb" | "mongo" => "MongoDB",
-        "cassandra" => "Cassandra",
         "hive2" => "Apache Hive",
         "sap" => "SAP HANA",
         "exa" => "Exasol",
@@ -1254,6 +1253,43 @@ mod tests {
         assert!(parsed.passwords.is_empty());
         assert_eq!(parsed.notes.len(), 1);
         assert!(parsed.notes[0].contains("keychain"));
+    }
+
+    #[test]
+    fn cassandra_data_source() {
+        let dir = TempDir::new("cassandra");
+        let path = dir.write(
+            "app/.idea/dataSources.xml",
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="DataSourceManagerImpl" format="xml" multifile-model="true">
+    <data-source source="LOCAL" name="events" group="dev" uuid="cass-1">
+      <driver-ref>cassandra</driver-ref>
+      <jdbc-driver>com.ing.data.cassandra.jdbc.CassandraDriver</jdbc-driver>
+      <jdbc-url>jdbc:cassandra://n1.local:9043,n2.local/events?localdatacenter=dc1</jdbc-url>
+    </data-source>
+    <data-source source="LOCAL" name="bare" uuid="cass-2">
+      <jdbc-url>jdbc:cassandra://n1.local</jdbc-url>
+    </data-source>
+  </component>
+</project>"#,
+        );
+        let parsed = parse(&path).unwrap();
+        let c = find(&parsed, "cass-1");
+        assert_eq!(c.profile.engine, Engine::Cassandra);
+        assert_eq!(
+            (c.profile.host.as_str(), c.profile.port),
+            ("n1.local,n2.local", 9043)
+        );
+        assert_eq!(c.profile.database, "events");
+        assert_eq!(c.profile.datacenter, "dc1");
+        assert_eq!(c.folder.as_deref(), Some("dev"));
+        let bare = find(&parsed, "cass-2");
+        assert_eq!(
+            (bare.profile.host.as_str(), bare.profile.port),
+            ("n1.local", 9042)
+        );
+        assert!(parsed.skipped.is_empty());
     }
 
     #[test]

@@ -36,8 +36,62 @@ pub fn apply_url(url: &str, profile: &mut ConnectionProfile) -> Result<(), Strin
         profile.port = 0;
         return Ok(());
     }
+    if let Some(r) = strip_prefix_ci(rest, "cassandra:") {
+        return cassandra(r, profile);
+    }
     let scheme = rest.split(':').next().unwrap_or_default();
     Err(format!("{scheme} URLs are not supported"))
+}
+
+/// `//host1[:port][,host2...][/keyspace][?params]` (Cassandra JDBC wrappers
+/// also join the hosts with `--`). The contact points stay in `host`,
+/// comma-separated; the port is the first one given. Cassandra's native
+/// protocol is plain text unless the URL asks for TLS.
+fn cassandra(rest: &str, profile: &mut ConnectionProfile) -> Result<(), String> {
+    profile.engine = Engine::Cassandra;
+    let r = rest.strip_prefix("//").ok_or("missing //host")?;
+    let (main, query) = r.split_once('?').unwrap_or((r, ""));
+    let (hosts, keyspace) = main.split_once('/').unwrap_or((main, ""));
+    let mut port = None;
+    let mut points = Vec::new();
+    for h in hosts
+        .split([',', ';'])
+        .flat_map(|h| h.split("--"))
+        .map(str::trim)
+        .filter(|h| !h.is_empty())
+    {
+        let (host, p) = split_host_port(h, 0);
+        if port.is_none() && p != 0 {
+            port = Some(p);
+        }
+        points.push(host);
+    }
+    profile.host = if points.is_empty() {
+        "localhost".into()
+    } else {
+        points.join(",")
+    };
+    profile.port = port.unwrap_or(9042);
+    profile.database = percent_decode(keyspace);
+    profile.ssl_mode = SslMode::Disable;
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        cassandra_params(k, &percent_decode(v), profile);
+    }
+    Ok(())
+}
+
+fn cassandra_params(k: &str, v: &str, p: &mut ConnectionProfile) {
+    match k.to_ascii_lowercase().as_str() {
+        "localdc" | "localdatacenter" | "datacenter" if !v.is_empty() => {
+            p.datacenter = v.to_string();
+        }
+        "ssl" | "usessl" | "enablessl" | "tls" if v.eq_ignore_ascii_case("true") => {
+            p.ssl_mode = SslMode::Require;
+        }
+        "user" | "username" if p.user.is_empty() => p.user = v.to_string(),
+        _ => {}
+    }
 }
 
 fn strip_prefix_ci<'a>(s: &'a str, prefix: &str) -> Option<&'a str> {
@@ -395,6 +449,32 @@ mod tests {
         assert_eq!(p.connect_string, d);
         let p = parse("jdbc:oracle:thin:scott/tiger@h:1521:X");
         assert_eq!(p.user, "scott");
+    }
+
+    #[test]
+    fn cassandra_forms() {
+        let p = parse("jdbc:cassandra://10.0.0.1:9043,10.0.0.2/shop?localdc=dc1&user=ana");
+        assert_eq!(p.engine, Engine::Cassandra);
+        assert_eq!((p.host.as_str(), p.port), ("10.0.0.1,10.0.0.2", 9043));
+        assert_eq!(p.database, "shop");
+        assert_eq!((p.datacenter.as_str(), p.user.as_str()), ("dc1", "ana"));
+        assert_eq!(p.ssl_mode, SslMode::Disable);
+        let p = parse("jdbc:cassandra://a--b--c/?ssl=true&localdatacenter=eu");
+        assert_eq!((p.host.as_str(), p.port), ("a,b,c", 9042));
+        assert_eq!(p.database, "");
+        assert_eq!(
+            (p.datacenter.as_str(), p.ssl_mode),
+            ("eu", SslMode::Require)
+        );
+        let p = parse("jdbc:cassandra://[::1]:9142/ks%201");
+        assert_eq!(
+            (p.host.as_str(), p.port, p.database.as_str()),
+            ("::1", 9142, "ks 1")
+        );
+        let p = parse("jdbc:cassandra://");
+        assert_eq!((p.host.as_str(), p.port), ("localhost", 9042));
+        let mut p = ConnectionProfile::default();
+        assert!(apply_url("jdbc:cassandra:host/ks", &mut p).is_err());
     }
 
     #[test]

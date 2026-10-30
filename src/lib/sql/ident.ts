@@ -8,6 +8,16 @@ const RESERVED = new Set([
 	"VIEW", "WHEN", "WHERE", "WITH",
 ]);
 
+/** Words CQL does not accept as a bare name (reserved keywords of Cassandra 3 to 5). */
+const CQL_RESERVED = new Set([
+	"ADD", "ALLOW", "ALTER", "AND", "APPLY", "ASC", "AUTHORIZE", "BATCH", "BEGIN", "BY", "COLUMNFAMILY",
+	"CREATE", "DEFAULT", "DELETE", "DESC", "DESCRIBE", "DROP", "ENTRIES", "EXECUTE", "FROM", "FULL",
+	"GRANT", "IF", "IN", "INDEX", "INFINITY", "INSERT", "INTO", "IS", "KEYSPACE", "LIMIT",
+	"MATERIALIZED", "MODIFY", "NAN", "NORECURSIVE", "NOT", "NULL", "OF", "ON", "OR", "ORDER", "PRIMARY",
+	"RENAME", "REPLACE", "REVOKE", "SCHEMA", "SELECT", "SET", "TABLE", "TO", "TOKEN", "TRUNCATE",
+	"UNLOGGED", "UPDATE", "USE", "USING", "VIEW", "WHERE", "WITH",
+]);
+
 /**
  * Quotes the identifier only when needed, in each engine's style.
  * PostgreSQL folds unquoted names to lowercase and Oracle to uppercase;
@@ -28,6 +38,9 @@ export function quoteIdent(name: string, engine: Engine): string {
 			return /^[A-Za-z_][A-Za-z0-9_@#$]*$/.test(name) && !reserved ? name : `[${name.replace(/]/g, "]]")}]`;
 		case "sqlite":
 			return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !reserved ? name : `"${name.replace(/"/g, '""')}"`;
+		case "cassandra":
+			// CQL folds unquoted names to lowercase.
+			return /^[a-z][a-z0-9_]*$/.test(name) && !CQL_RESERVED.has(name.toUpperCase()) ? name : `"${name.replace(/"/g, '""')}"`;
 		case "redis":
 			return redisArg(name);
 	}

@@ -33,6 +33,7 @@ body:
         - SQL Server / Azure SQL
         - SQLite
         - Redis / Valkey
+        - Apache Cassandra
         - Not related to a specific database
     validations:
       required: true

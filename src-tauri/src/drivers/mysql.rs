@@ -572,6 +572,7 @@ impl MySession {
                 default_value: (r[4] == "0")
                     .then(|| default_expr(&r[5], &r[6], mariadb))
                     .flatten(),
+                key_role: None,
             })
             .collect())
     }

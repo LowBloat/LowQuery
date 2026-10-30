@@ -120,6 +120,7 @@ describe("canViewOnServer", () => {
 		expect(canViewOnServer("exec sp_who", "sqlserver")).toBe(false);
 		expect(canViewOnServer("pragma table_info(t)", "sqlite")).toBe(false);
 		expect(canViewOnServer("select", "redis")).toBe(false);
+		expect(canViewOnServer("SELECT * FROM ks.t", "cassandra")).toBe(false);
 	});
 });
 

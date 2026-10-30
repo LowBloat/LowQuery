@@ -8,12 +8,15 @@
 //!   `LQ_MYSQL_PASSWORD`, `LQ_MYSQL_DB`, `LQ_MYSQL_ENGINE`
 //! - SQL Server: `LQ_MSSQL_HOST`, `LQ_MSSQL_PORT`, `LQ_MSSQL_USER`, `LQ_MSSQL_PASSWORD`, `LQ_MSSQL_DB`
 //! - Redis: `LQ_REDIS_HOST`, `LQ_REDIS_PORT`, `LQ_REDIS_PASSWORD`
+//! - Cassandra: `LQ_CASSANDRA_HOST`, `LQ_CASSANDRA_PORT` (9042), `LQ_CASSANDRA_USER`,
+//!   `LQ_CASSANDRA_PASSWORD`, `LQ_CASSANDRA_DC`
 //!
 //! `cargo test --lib mcp_postgres_server -- --ignored --test-threads=1`
 //!
 //! Each test writes a `connections.json` with a read, an off and a write
 //! profile for the same server, creates `lq_mcp_e2e_*` objects through the
-//! write connection and drops them at the end, also when a check fails.
+//! write connection and drops them at the end, also when a check fails
+//! (Cassandra: the keyspace `lq_mcp_e2e`).
 
 use std::future::Future;
 use std::path::PathBuf;
@@ -130,6 +133,21 @@ fn redis_target() -> Option<Target> {
             ..Default::default()
         },
         env("LQ_REDIS_PASSWORD"),
+    ))
+}
+
+fn cassandra_target() -> Option<Target> {
+    Some((
+        ConnectionProfile {
+            engine: Engine::Cassandra,
+            host: env("LQ_CASSANDRA_HOST")?,
+            port: port("LQ_CASSANDRA_PORT", 9042),
+            user: env("LQ_CASSANDRA_USER").unwrap_or_default(),
+            datacenter: env("LQ_CASSANDRA_DC").unwrap_or_default(),
+            ssl_mode: SslMode::Disable,
+            ..Default::default()
+        },
+        env("LQ_CASSANDRA_PASSWORD"),
     ))
 }
 
@@ -1373,6 +1391,305 @@ async fn mcp_redis_server() {
             && e.error
                 .as_deref()
                 .is_some_and(|m| m.contains("longer than"))));
+        assert!(log
+            .iter()
+            .any(|e| !e.ok && e.tool == "list_schemas" && e.connection_id.is_none()));
+        let _ = std::fs::remove_dir_all(&t.dir);
+    })
+    .await;
+}
+
+// ---------------------------------------------------------------------------
+// Cassandra
+
+const KEYSPACE: &str = "lq_mcp_e2e";
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn mcp_cassandra_server() {
+    let Some(target) = cassandra_target() else {
+        return;
+    };
+    let t2 = target.clone();
+    let cleanup = format!("DROP KEYSPACE IF EXISTS {KEYSPACE}");
+    guarded(&target, &[cleanup.as_str()], async move {
+        let mut t = E2e::start(&t2, "cassandra").await;
+        let (ro, rw) = (t.ro.clone(), t.rw.clone());
+        t.check_connections().await;
+        let list = t.ok("list_connections", json!({})).await;
+        let conns = list["structuredContent"]["connections"].as_array().unwrap();
+        assert_eq!(conns[0]["engine"], "Cassandra");
+        assert!(conns[0]["dialect"]
+            .as_str()
+            .unwrap()
+            .contains("ALLOW FILTERING"));
+
+        // The write connection creates a keyspace, a type and a table. Names
+        // are keyspace-qualified: no call may change the session keyspace.
+        t.write(&format!(
+            "CREATE KEYSPACE {KEYSPACE} WITH replication = \
+             {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+        ))
+        .await;
+        t.write(&format!(
+            "CREATE TYPE {KEYSPACE}.addr (street text, zip int)"
+        ))
+        .await;
+        t.write(&format!(
+            "CREATE TABLE {KEYSPACE}.items (id int, seq int, name text, tags set<text>, \
+             home frozen<addr>, PRIMARY KEY (id, seq))"
+        ))
+        .await;
+        let insert = format!(
+            "INSERT INTO {KEYSPACE}.items (id, seq, name, tags) VALUES (1, 1, 'uno', {{'a', 'b'}})"
+        );
+        t.write(&insert).await;
+        // A batch is one statement, semicolons and all.
+        t.write(&format!(
+            "BEGIN BATCH \
+             INSERT INTO {KEYSPACE}.items (id, seq, name) VALUES (1, 2, 'it''s; two'); \
+             INSERT INTO {KEYSPACE}.items (id, seq, name) VALUES (2, 1, 'tres'); \
+             APPLY BATCH;"
+        ))
+        .await;
+        t.write(&format!(
+            "UPDATE {KEYSPACE}.items SET home = {{street: 'Main', zip: 12345}} \
+             WHERE id = 1 AND seq = 1"
+        ))
+        .await;
+
+        // Reads on the read connection.
+        let rows = t
+            .read(&format!(
+                "SELECT seq, name, tags FROM {KEYSPACE}.items WHERE id = 1"
+            ))
+            .await;
+        assert_eq!(
+            rows,
+            [
+                row(&[Some("1"), Some("uno"), Some("{'a', 'b'}")]),
+                row(&[Some("2"), Some("it's; two"), None]),
+            ]
+        );
+        let rows = t
+            .read(&format!(
+                "SELECT home FROM {KEYSPACE}.items WHERE id = 1 AND seq = 1;"
+            ))
+            .await;
+        assert_eq!(rows, [row(&[Some("{street: 'Main', zip: 12345}")])]);
+        let rows = t
+            .read(&format!(
+                "SELECT name FROM {KEYSPACE}.items WHERE name = 'tres' ALLOW FILTERING"
+            ))
+            .await;
+        assert_eq!(rows, [row(&[Some("tres")])]);
+        let r = t
+            .ok(
+                "query",
+                json!({ "connection": ro, "max_rows": 1, "sql": format!(
+                    "SELECT seq FROM {KEYSPACE}.items WHERE id = 1 -- ; INSERT\n"
+                ) }),
+            )
+            .await;
+        assert_eq!(rows_of(&r).len(), 1);
+        assert_eq!(r["structuredContent"]["truncated"], true);
+
+        // Read-only: SELECT and LIST only, whatever the statement hides.
+        let refused = [
+            format!("INSERT INTO {KEYSPACE}.items (id, seq) VALUES (9, 9)"),
+            format!("UPDATE {KEYSPACE}.items SET name = 'x' WHERE id = 1 AND seq = 1"),
+            format!("DELETE FROM {KEYSPACE}.items WHERE id = 1"),
+            format!("TRUNCATE {KEYSPACE}.items"),
+            format!("DROP TABLE {KEYSPACE}.items"),
+            format!("ALTER TABLE {KEYSPACE}.items ADD extra int"),
+            format!("CREATE TABLE {KEYSPACE}.other (k int PRIMARY KEY)"),
+            format!(
+                "BEGIN BATCH INSERT INTO {KEYSPACE}.items (id, seq) VALUES (9, 9); APPLY BATCH"
+            ),
+            format!("USE {KEYSPACE}"),
+            "GRANT SELECT ON ALL KEYSPACES TO nobody".to_string(),
+            format!("SELECT * FROM {KEYSPACE}.items; DELETE FROM {KEYSPACE}.items WHERE id = 1"),
+            format!("SELECT * FROM {KEYSPACE}.items WHERE id = 1 /* ; */ ; TRUNCATE x"),
+        ];
+        for sql in refused {
+            let e = t
+                .refused("query", json!({ "connection": ro, "sql": sql }))
+                .await;
+            assert!(
+                e.contains(READ_ONLY) || e.contains("one statement"),
+                "{sql}: {e}"
+            );
+        }
+        let e = t
+            .refused(
+                "query",
+                json!({ "connection": ro, "sql": "DESCRIBE KEYSPACES" }),
+            )
+            .await;
+        assert!(e.contains("cqlsh"), "{e}");
+        let e = t
+            .refused("execute", json!({ "connection": ro, "sql": insert }))
+            .await;
+        assert!(e.contains(READ_ONLY), "{e}");
+        // None of it changed anything.
+        let n = t
+            .value(&format!("SELECT count(*) FROM {KEYSPACE}.items"))
+            .await;
+        assert_eq!(n.as_deref(), Some("3"));
+
+        // The write connection refuses transaction control and USE, and
+        // sends reads to `query`.
+        for sql in [
+            "BEGIN TRANSACTION".to_string(),
+            "COMMIT TRANSACTION".to_string(),
+            "COMMIT".to_string(),
+            format!("USE {KEYSPACE}"),
+            format!("{insert}; {insert}"),
+        ] {
+            t.refused("execute", json!({ "connection": rw, "sql": sql }))
+                .await;
+        }
+        let e = t
+            .refused(
+                "query",
+                json!({ "connection": rw, "sql": format!(
+                    "DELETE FROM {KEYSPACE}.items WHERE id = 2"
+                ) }),
+            )
+            .await;
+        assert!(e.contains("use execute"), "{e}");
+
+        // Schema tools.
+        let schemas = t.ok("list_schemas", json!({ "connection": ro })).await;
+        let names = schemas["structuredContent"]["schemas"].as_array().unwrap();
+        assert!(names.iter().any(|n| n == KEYSPACE), "{names:?}");
+        let tables = t
+            .ok(
+                "list_tables",
+                json!({ "connection": ro, "schema": KEYSPACE }),
+            )
+            .await;
+        let objects = tables["structuredContent"]["tables"].as_array().unwrap();
+        for (name, kind) in [("items", "table"), ("addr", "type")] {
+            assert!(
+                objects
+                    .iter()
+                    .any(|o| o["name"] == name && o["kind"] == kind),
+                "{name}: {objects:?}"
+            );
+        }
+        let d = t
+            .ok(
+                "describe_table",
+                json!({ "connection": ro, "table": "items", "schema": KEYSPACE }),
+            )
+            .await;
+        let cols = d["structuredContent"]["columns"].as_array().unwrap();
+        let role = |name: &str| {
+            cols.iter().find(|c| c["name"] == name).map(|c| {
+                (
+                    c["keyRole"].clone(),
+                    c["primaryKey"].clone(),
+                    c["type"].clone(),
+                )
+            })
+        };
+        assert_eq!(
+            role("id"),
+            Some((json!("partition"), json!(true), json!("int")))
+        );
+        assert_eq!(
+            role("seq"),
+            Some((json!("clustering"), json!(true), json!("int")))
+        );
+        assert_eq!(
+            role("name"),
+            Some((json!("regular"), json!(false), json!("text")))
+        );
+        assert_eq!(
+            role("tags").map(|r| r.2),
+            Some(json!("set<text>")),
+            "{cols:?}"
+        );
+        assert!(d["structuredContent"]["foreignKeys"]
+            .as_array()
+            .is_some_and(Vec::is_empty));
+        // keyspace.table works as the table argument.
+        t.ok(
+            "describe_table",
+            json!({ "connection": ro, "table": format!("{KEYSPACE}.items") }),
+        )
+        .await;
+        let e = t
+            .refused(
+                "describe_table",
+                json!({ "connection": ro, "table": "nope", "schema": KEYSPACE }),
+            )
+            .await;
+        assert!(e.contains("not found"), "{e}");
+
+        let search = |pattern: &'static str| json!({ "connection": ro, "pattern": pattern });
+        let found = t.ok("search_objects", search("ITEM")).await;
+        let matches = found["structuredContent"]["matches"].as_array().unwrap();
+        assert!(
+            matches.iter().any(|m| m["table"] == "items"
+                && m["schema"] == KEYSPACE
+                && m["kind"] == "table"
+                && m["column"].is_null()),
+            "{matches:?}"
+        );
+        let found = t.ok("search_objects", search("tags")).await;
+        let matches = found["structuredContent"]["matches"].as_array().unwrap();
+        assert!(
+            matches.iter().any(|m| m["table"] == "items"
+                && m["column"] == "tags"
+                && m["columnType"] == "set<text>"),
+            "{matches:?}"
+        );
+        let found = t.ok("search_objects", search("addr")).await;
+        let matches = found["structuredContent"]["matches"].as_array().unwrap();
+        assert!(
+            matches
+                .iter()
+                .any(|m| m["table"] == "addr" && m["kind"] == "type"),
+            "{matches:?}"
+        );
+        let e = t
+            .refused(
+                "explain",
+                json!({ "connection": ro, "sql": format!("SELECT * FROM {KEYSPACE}.items") }),
+            )
+            .await;
+        assert!(e.contains("no EXPLAIN"), "{e}");
+
+        // Writes through the write connection are visible to reads.
+        t.write(&format!(
+            "DELETE FROM {KEYSPACE}.items WHERE id = 2 AND seq = 1"
+        ))
+        .await;
+        let n = t
+            .value(&format!("SELECT count(*) FROM {KEYSPACE}.items"))
+            .await;
+        assert_eq!(n.as_deref(), Some("2"));
+
+        // Activity log.
+        let log = t.log();
+        let on = |e: &AuditEntry, id: &str| e.connection_id.as_deref() == Some(id);
+        assert!(log.iter().any(|e| e.tool == "list_connections" && e.ok));
+        assert!(log
+            .iter()
+            .any(|e| e.tool == "search_objects" && e.ok && on(e, &ro)));
+        assert!(log.iter().any(|e| e.tool == "execute"
+            && e.ok
+            && on(e, &rw)
+            && e.detail.as_deref() == Some(insert.as_str())));
+        assert!(log.iter().any(|e| e.tool == "query"
+            && !e.ok
+            && on(e, &ro)
+            && e.error.as_deref().is_some_and(|m| m.contains(READ_ONLY))));
+        assert!(log
+            .iter()
+            .any(|e| e.tool == "execute" && !e.ok && on(e, &ro)));
         assert!(log
             .iter()
             .any(|e| !e.ok && e.tool == "list_schemas" && e.connection_id.is_none()));

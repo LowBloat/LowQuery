@@ -1,7 +1,7 @@
 //! Catalog facts exports and imports need beyond what the tree shows:
 //! generated columns (never inserted), identity columns (inserted with their
 //! values, then the generator moved past them) and foreign keys (tables in
-//! dependency order).
+//! dependency order). Cassandra has none of the three: the answers are empty.
 
 use std::collections::{HashMap, HashSet};
 
@@ -59,7 +59,8 @@ pub async fn generated_columns(
             text(e, table),
             text(e, schema)
         ),
-        Engine::Redis => return Ok(HashSet::new()),
+        // CQL has no generated columns (counters are written by UPDATE).
+        Engine::Redis | Engine::Cassandra => return Ok(HashSet::new()),
     };
     Ok(names(first_column(s, sql).await?))
 }
@@ -207,7 +208,8 @@ pub async fn dependency_order(s: &Session, schema: &str, tables: Vec<String>) ->
             super::sql::ident(e, schema),
             text(e, schema)
         ),
-        Engine::Redis => return tables,
+        // No foreign keys in Redis or CQL.
+        Engine::Redis | Engine::Cassandra => return tables,
     };
     let Ok(rows) = first_column(s, sql).await else {
         return tables;

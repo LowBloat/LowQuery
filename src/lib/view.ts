@@ -115,9 +115,9 @@ export function viewRows(columns: ColumnInfo[], rows: (string | null)[][], view:
 	return isEmptyView(view) ? rows : viewOrder(columns, rows, view).map((i) => rows[i]);
 }
 
-/** A query the view can wrap: Redis commands and non-SELECT statements cannot. */
+/** A query the view can wrap: Redis and CQL (no subqueries), and non-SELECT statements cannot. */
 export function canViewOnServer(sql: string, dialect: Dialect): boolean {
-	if (dialect === "redis") return false;
+	if (dialect === "redis" || dialect === "cassandra") return false;
 	const kw = firstKeywords(sql, 1)[0];
 	return kw === "SELECT" || kw === "WITH";
 }

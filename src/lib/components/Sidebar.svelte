@@ -33,6 +33,10 @@
 		Link2,
 		Columns3,
 		KeyRound,
+		ArrowDownWideNarrow,
+		Pin,
+		Sigma,
+		ScanSearch,
 		Play,
 		FileInput,
 		ArrowUpCircle,
@@ -57,7 +61,7 @@
 	let { oninsert, onnavigate }: Props = $props();
 
 	const KIND_ORDER = [
-		"table", "view", "matview", "foreign", "sequence", "function", "procedure", "package", "type", "synonym",
+		"table", "view", "matview", "foreign", "sequence", "function", "procedure", "package", "type", "synonym", "aggregate", "index",
 		"string", "hash", "list", "set", "zset", "stream", "json",
 	];
 	const KIND_LABEL: Record<string, string> = {
@@ -71,6 +75,8 @@
 		package: "Packages",
 		type: "Types",
 		synonym: "Synonyms",
+		aggregate: "Aggregates",
+		index: "Indexes",
 		string: "Strings",
 		hash: "Hashes",
 		list: "Lists",
@@ -90,6 +96,8 @@
 		package: Package,
 		type: Shapes,
 		synonym: Link2,
+		aggregate: Sigma,
+		index: ScanSearch,
 		string: KeyRound,
 		hash: Braces,
 		list: List,
@@ -97,6 +105,13 @@
 		zset: ListOrdered,
 		stream: Waves,
 		json: Braces,
+	} as const;
+
+	/** Cassandra key roles: icon and text for the column list. */
+	const KEY_ROLE = {
+		partition: { icon: KeyRound, short: "PK", label: "Partition key" },
+		clustering: { icon: ArrowDownWideNarrow, short: "CK", label: "Clustering column" },
+		static: { icon: Pin, short: "S", label: "Static column" },
 	} as const;
 
 	function groups(objects: ObjectNode[]) {
@@ -284,11 +299,18 @@
 																<ul class="lq-tree__children lq-tree__cols" role="list">
 																	{#each o.columns as c (c.name)}
 																		<li class="lq-tree__col">
-																			{#if c.primaryKey}<KeyRound size={12} aria-label="Primary key" />{:else}<Columns3 size={12} aria-hidden="true" />{/if}
+																			{#if c.keyRole && c.keyRole in KEY_ROLE}
+																				{@const role = KEY_ROLE[c.keyRole as keyof typeof KEY_ROLE]}
+																				<role.icon size={12} aria-label={role.label} />
+																			{:else if c.primaryKey}<KeyRound size={12} aria-label="Primary key" />{:else}<Columns3 size={12} aria-hidden="true" />{/if}
 																			<button type="button" class="lq-tree__col-name" ondblclick={() => oninsert?.(quoteIdent(c.name, p.engine))} title="Double-click to insert into the editor">
 																				{c.name}
 																			</button>
-																			<span class="lq-tree__type">{c.typeName}{c.nullable ? "" : " not null"}</span>
+																			<span class="lq-tree__type">{c.typeName}{c.nullable || c.keyRole ? "" : " not null"}</span>
+																			{#if c.keyRole && c.keyRole in KEY_ROLE}
+																				{@const role = KEY_ROLE[c.keyRole as keyof typeof KEY_ROLE]}
+																				<span class="lq-tree__role" title={role.label}>{role.short}</span>
+																			{/if}
 																		</li>
 																	{/each}
 																</ul>
@@ -603,6 +625,16 @@
 		font-size: 11px;
 		white-space: nowrap;
 		text-overflow: ellipsis;
+	}
+	.lq-tree__role {
+		flex-shrink: 0;
+		padding: 0 4px;
+		border: 1px solid var(--ca-outline-subtle);
+		color: var(--ca-text-secondary);
+		font-family: var(--ca-font-mono);
+		font-size: 10px;
+		font-weight: 600;
+		letter-spacing: 0.04em;
 	}
 	.lq-tree__error,
 	.lq-tree__hint {

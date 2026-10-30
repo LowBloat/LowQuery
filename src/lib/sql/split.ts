@@ -2,10 +2,11 @@
  * Splits a SQL script into statements following each database's lexical
  * rules: strings, quoted identifiers, comments, PostgreSQL dollar quoting,
  * Oracle q-quoting and PL/SQL blocks ended by `/`, MySQL `DELIMITER`,
- * SQL Server `GO` batches and BEGIN...END blocks, and SQLite trigger bodies.
+ * SQL Server `GO` batches and BEGIN...END blocks, SQLite trigger bodies, and
+ * Cassandra `BEGIN BATCH ... APPLY BATCH`, `$$` strings and `//` comments.
  */
 
-export type Dialect = "postgres" | "oracle" | "mysql" | "sqlserver" | "sqlite" | "redis";
+export type Dialect = "postgres" | "oracle" | "mysql" | "sqlserver" | "sqlite" | "redis" | "cassandra";
 
 export interface SqlStatement {
 	/** Statement text, without the terminator (`;`, `/`, `GO` or a custom delimiter). */
@@ -73,6 +74,13 @@ export function isTsqlModuleStart(sql: string): boolean {
 	return ["PROCEDURE", "PROC", "FUNCTION", "TRIGGER", "VIEW"].includes(kw[i] ?? "");
 }
 
+/** CQL `BEGIN [UNLOGGED | COUNTER] BATCH`, whose `;` belong to the batch up to APPLY BATCH. */
+export function isCqlBatchStart(sql: string): boolean {
+	const kw = firstKeywords(sql, 3);
+	if (kw[0] !== "BEGIN") return false;
+	return kw[1] === "BATCH" || ((kw[1] === "UNLOGGED" || kw[1] === "COUNTER") && kw[2] === "BATCH");
+}
+
 /** SQLite `CREATE [TEMP] TRIGGER`, whose body holds `;` up to its END. */
 export function isSqliteTriggerStart(sql: string): boolean {
 	const kw = firstKeywords(sql, 3);
@@ -126,8 +134,9 @@ export function splitStatements(
 	const out: SqlStatement[] = [];
 	const n = sql.length;
 	let stmtStart = -1; // first significant character of the current statement
-	// "plsql": ends only at "/" (Oracle); "batch": ends only at GO (T-SQL modules).
-	let mode: "normal" | "plsql" | "batch" = "normal";
+	// "plsql": ends only at "/" (Oracle); "batch": ends only at GO (T-SQL modules);
+	// "cql-batch": ends at the first ";" after APPLY BATCH (Cassandra).
+	let mode = "normal" as "normal" | "plsql" | "batch" | "cql-batch";
 	// BEGIN/CASE ... END nesting (T-SQL blocks, SQLite trigger bodies).
 	let blocks = 0;
 	let trackBlocks = false;
@@ -155,6 +164,7 @@ export function splitStatements(
 		const head = sql.slice(at, at + 400);
 		if (dialect === "oracle" && isPlsqlStart(head)) mode = "plsql";
 		else if (dialect === "sqlserver" && isTsqlModuleStart(head)) mode = "batch";
+		else if (dialect === "cassandra" && isCqlBatchStart(head)) mode = "cql-batch";
 		trackBlocks = dialect === "sqlserver" || (dialect === "sqlite" && isSqliteTriggerStart(head));
 	};
 
@@ -218,9 +228,9 @@ export function splitStatements(
 			continue;
 		}
 
-		// Line comments. MySQL needs whitespace after "--" and also accepts "#".
+		// Line comments. MySQL needs whitespace after "--" and also accepts "#"; CQL accepts "//".
 		const dashComment = c === "-" && next === "-" && (dialect !== "mysql" || next === undefined || /\s/.test(sql[i + 2] ?? " "));
-		if (dashComment || (dialect === "mysql" && c === "#")) {
+		if (dashComment || (dialect === "mysql" && c === "#") || (dialect === "cassandra" && c === "/" && next === "/")) {
 			while (i < n && sql[i] !== "\n") i++;
 			continue;
 		}
@@ -302,11 +312,21 @@ export function splitStatements(
 			}
 		}
 
+		// CQL string between two bare "$$" (function bodies).
+		if (dialect === "cassandra" && c === "$" && next === "$") {
+			const end = sql.indexOf("$$", i + 2);
+			i = end < 0 ? n : end + 2;
+			continue;
+		}
+
 		// Words: BEGIN/CASE/END nesting where `;` can appear inside a block.
 		if (WORD_START.test(c) && !isIdentChar(sql[i - 1])) {
 			let j = i;
 			// A custom delimiter can follow a word directly ("END$$").
 			while (j < n && isIdentChar(sql[j]) && !(delimiter !== ";" && sql.startsWith(delimiter, j))) j++;
+			if (mode === "cql-batch" && sql.slice(i, j).toUpperCase() === "APPLY") {
+				if (firstKeywords(sql.slice(j, j + 40), 1)[0] === "BATCH") mode = "normal";
+			}
 			if (trackBlocks) {
 				const word = sql.slice(i, j).toUpperCase();
 				if (word === "BEGIN") {

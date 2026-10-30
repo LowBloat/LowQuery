@@ -256,7 +256,8 @@ class Transfer {
 			const plan = createTableSql(
 				t.schema,
 				table,
-				this.newColumns(t).map((c) => ({ ...c, nullable: true, defaultValue: "", primaryKey: false, identity: false })),
+				// A Cassandra table needs a key: the first file column becomes the partition key.
+				this.newColumns(t).map((c, i) => ({ ...c, nullable: true, defaultValue: "", primaryKey: e === "cassandra" && i === 0, identity: false })),
 				e,
 			);
 			if (plan.statements.length === 0) {

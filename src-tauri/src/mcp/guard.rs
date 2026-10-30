@@ -18,6 +18,7 @@ enum Dialect {
     Mysql,
     SqlServer,
     Sqlite,
+    Cassandra,
 }
 
 impl Dialect {
@@ -29,6 +30,7 @@ impl Dialect {
             Engine::Sqlserver => Self::SqlServer,
             // Redis never reaches the SQL lexer.
             Engine::Sqlite | Engine::Redis => Self::Sqlite,
+            Engine::Cassandra => Self::Cassandra,
         }
     }
 }
@@ -95,7 +97,7 @@ fn is_word_char(c: u8, d: Dialect) -> bool {
     c.is_ascii_alphanumeric()
         || c == b'_'
         || c >= 0x80
-        || (c == b'$' && d != Dialect::Sqlite)
+        || (c == b'$' && !matches!(d, Dialect::Sqlite | Dialect::Cassandra))
         || (c == b'#' && matches!(d, Dialect::Oracle | Dialect::SqlServer))
 }
 
@@ -162,6 +164,15 @@ fn skip_dollar_quote(b: &[u8], i: usize) -> Result<Option<usize>, String> {
         .windows(tag.len())
         .position(|w| w == tag)
         .map(|p| Some(body + p + tag.len()))
+        .ok_or_else(|| UNTERMINATED.to_string())
+}
+
+/// CQL `$$...$$`: `i` is at the first `$`, the next one is known to be `$`.
+fn skip_double_dollar(b: &[u8], i: usize) -> Result<usize, String> {
+    b[i + 2..]
+        .windows(2)
+        .position(|w| w == b"$$")
+        .map(|p| i + 2 + p + 2)
         .ok_or_else(|| UNTERMINATED.to_string())
 }
 
@@ -239,7 +250,9 @@ fn lex(sql: &str, d: Dialect, backslash: bool) -> Result<Vec<Token>, String> {
                 push(&mut out, Tok::Punct(c), i + 1);
                 i += 1;
             }
-        } else if c == b'#' && d == Dialect::Mysql {
+        } else if (c == b'#' && d == Dialect::Mysql)
+            || (c == b'/' && next == Some(b'/') && d == Dialect::Cassandra)
+        {
             i = line_end(b, i);
         } else if c == b'/' && next == Some(b'*') {
             if d == Dialect::Mysql
@@ -278,6 +291,14 @@ fn lex(sql: &str, d: Dialect, backslash: bool) -> Result<Vec<Token>, String> {
             }
             i = j + 1;
             push(&mut out, Tok::Quoted, i);
+        } else if c == b'$' && d == Dialect::Cassandra {
+            if next == Some(b'$') {
+                i = skip_double_dollar(b, i)?;
+                push(&mut out, Tok::Quoted, i);
+            } else {
+                i += 1;
+                push(&mut out, Tok::Punct(c), i);
+            }
         } else if c == b'$' && d == Dialect::Postgres {
             match skip_dollar_quote(b, i)? {
                 Some(end) => {
@@ -355,17 +376,50 @@ fn is_routine(toks: &[Token]) -> bool {
         })
 }
 
+/// A CQL `BEGIN [UNLOGGED|COUNTER] BATCH` whose `APPLY BATCH` has not come
+/// yet: the `;` between its statements do not end it.
+fn is_cql_batch_open(group: &[Token]) -> bool {
+    let mut w = group.iter().filter_map(|t| match &t.tok {
+        Tok::Word(w) => Some(w.as_str()),
+        _ => None,
+    });
+    let opens = w.next() == Some("BEGIN")
+        && match w.next() {
+            Some("UNLOGGED" | "COUNTER") => w.next() == Some("BATCH"),
+            Some("BATCH") => true,
+            _ => false,
+        };
+    if !opens {
+        return false;
+    }
+    let mut prev = "";
+    for word in group.iter().filter_map(|t| match &t.tok {
+        Tok::Word(w) => Some(w.as_str()),
+        _ => None,
+    }) {
+        if prev == "APPLY" && word == "BATCH" {
+            return false;
+        }
+        prev = word;
+    }
+    true
+}
+
 /// Splits `toks` and keeps the only statement, with the byte offset where
 /// it ends.
 fn split_one(toks: Vec<Token>, sql: &str, d: Dialect) -> Result<(Vec<Tok>, usize), String> {
-    let block = if d == Dialect::Oracle {
-        is_plsql(sql)
-    } else {
-        is_routine(&toks)
+    // CQL function bodies are `$$...$$` strings, so only batches span `;`.
+    let block = match d {
+        Dialect::Oracle => is_plsql(sql),
+        Dialect::Cassandra => false,
+        _ => is_routine(&toks),
     };
     let mut groups: Vec<Vec<Token>> = vec![Vec::new()];
     for t in toks {
-        let separator = t.tok == Tok::Slash || (t.tok == Tok::Semi && !block);
+        let in_batch = d == Dialect::Cassandra
+            && t.tok == Tok::Semi
+            && groups.last().is_some_and(|g| is_cql_batch_open(g));
+        let separator = t.tok == Tok::Slash || (t.tok == Tok::Semi && !block && !in_batch);
         if separator {
             groups.push(Vec::new());
         } else if let Some(g) = groups.last_mut() {
@@ -566,9 +620,32 @@ fn check_pragma(toks: &[Tok]) -> Result<(), String> {
     }
 }
 
+/// CQL reads: SELECT and LIST only. LIST (ROLES, USERS, PERMISSIONS) only
+/// reports, so its permission names (CREATE, ALTER, DROP...) are not scanned.
+fn check_cql_view(first: &str, toks: &[Tok]) -> Result<(), String> {
+    match first {
+        "LIST" => Ok(()),
+        "SELECT" => match words(toks).find(|w| WRITE_WORDS.contains(w)) {
+            Some(w) => Err(format!("{w} is not allowed in a read statement.")),
+            None => Ok(()),
+        },
+        "DESCRIBE" | "DESC" => Err(
+            "DESCRIBE is a cqlsh command, not CQL; use the schema, table and search tools instead."
+                .into(),
+        ),
+        "WITH" | "EXPLAIN" => Err(format!("{first} does not exist in CQL; send a SELECT.")),
+        _ => Err(format!(
+            "{first} is not a read statement; CQL reads are SELECT and LIST."
+        )),
+    }
+}
+
 fn check_view(toks: &[Tok], engine: Engine) -> Result<(), String> {
     let first =
         first_word(toks).ok_or("The statement must start with a keyword such as SELECT.")?;
+    if engine == Engine::Cassandra {
+        return check_cql_view(first, toks);
+    }
     let allowed = matches!(
         first,
         "SELECT" | "WITH" | "SHOW" | "DESCRIBE" | "DESC" | "EXPLAIN" | "VALUES" | "TABLE"
@@ -610,7 +687,8 @@ fn check_view(toks: &[Tok], engine: Engine) -> Result<(), String> {
 }
 
 /// Accepts SELECT, WITH, SHOW, DESCRIBE, EXPLAIN (without ANALYZE), VALUES,
-/// TABLE and reading PRAGMAs; the error says why the text is not a read.
+/// TABLE and reading PRAGMAs (CQL: SELECT and LIST); the error says why the
+/// text is not a read.
 pub fn check_read(stmt: &Checked, engine: Engine) -> Result<(), String> {
     stmt.views.iter().try_for_each(|v| check_view(v, engine))
 }
@@ -625,6 +703,19 @@ pub fn check_write(stmt: &Checked, engine: Engine) -> Result<(), String> {
         let first = w.next().unwrap_or("");
         let second = w.next().unwrap_or("");
         let control = match first {
+            // `BEGIN [UNLOGGED|COUNTER] BATCH` is one statement, not a
+            // transaction; Accord (Cassandra 5.1+) uses BEGIN TRANSACTION.
+            "BEGIN" if engine == Engine::Cassandra => {
+                matches!(second, "TRANSACTION" | "TRAN")
+            }
+            // CQL has no savepoints; USE would change the session's keyspace
+            // for later calls.
+            "USE" if engine == Engine::Cassandra => {
+                return Err(
+                    "USE changes the session keyspace; qualify names as keyspace.table instead."
+                        .into(),
+                );
+            }
             "BEGIN" => match engine {
                 Engine::Oracle => false,
                 Engine::Sqlserver => matches!(second, "TRAN" | "TRANSACTION" | "DISTRIBUTED"),
@@ -998,6 +1089,105 @@ mod tests {
         assert!(write("begin tran", Engine::Sqlserver).is_err());
         assert!(write("set autocommit = 0", Engine::Mysql).is_err());
         assert!(write("set implicit_transactions on", Engine::Sqlserver).is_err());
+    }
+
+    #[test]
+    fn cql_statements_and_batches() {
+        let cql = |sql: &str| one(sql, Engine::Cassandra);
+        assert_eq!(cql("select * from ks.t;").unwrap(), "select * from ks.t");
+        assert!(cql("select 1 from t; select 2 from t").is_err());
+        assert!(cql("select 1 from t; delete from t where k = 1;").is_err());
+        assert!(cql("  -- nothing\n // nothing\n ; ").is_err());
+        let batch = "BEGIN BATCH\n INSERT INTO ks.t (k) VALUES (1);\n \
+                     INSERT INTO ks.t (k) VALUES (2);\nAPPLY BATCH;";
+        assert!(cql(batch).unwrap().ends_with("APPLY BATCH"));
+        for head in ["begin unlogged batch", "BEGIN COUNTER BATCH"] {
+            let sql = format!("{head} update t set c = c + 1 where k = 1; apply batch");
+            assert!(cql(&sql).is_ok(), "{sql}");
+        }
+        // Whatever follows APPLY BATCH is a second statement.
+        assert!(cql(&format!("{batch} select 1 from t")).is_err());
+        assert!(cql(&format!("{batch} delete from t where k = 1;")).is_err());
+        // Other BEGIN statements still split at `;`.
+        assert!(cql("begin; select 1 from t").is_err());
+    }
+
+    #[test]
+    fn cql_lexer_hides_semicolons_and_keywords() {
+        let cases = [
+            "select 'a;b', \"c;d\" from t -- ;\n where k = 1",
+            "select 'it''s; here' from t // ; delete from t\n",
+            "select \"we\"\"ird;\" from t /* ; /* */",
+            "create function f(a int) returns null on null input returns int \
+             language java as $$ return a; $$",
+            "select $$a;b$$ from t",
+        ];
+        for sql in cases {
+            assert!(one(sql, Engine::Cassandra).is_ok(), "{sql}");
+        }
+        // Block comments do not nest, `\` does not escape in strings.
+        assert!(one("select 1 /* /* */ ; delete from t */", Engine::Cassandra).is_err());
+        assert!(one(r"select 'a\'; delete from t; -- '", Engine::Cassandra).is_err());
+        assert!(one("select 'abc", Engine::Cassandra).is_err());
+        assert!(one("select $$ abc", Engine::Cassandra).is_err());
+        assert!(one("select 1 /* open", Engine::Cassandra).is_err());
+        // A comment hides a write word from the classifier too.
+        assert!(read("select a from t -- delete\n", Engine::Cassandra).is_ok());
+    }
+
+    #[test]
+    fn cql_classifier() {
+        let cql = |sql: &str| read(sql, Engine::Cassandra);
+        assert!(cql("SELECT * FROM ks.t WHERE k = 1 LIMIT 10").is_ok());
+        assert!(cql("select * from ks.t where c > 1 allow filtering").is_ok());
+        assert!(cql("select \"insert\", 'delete from t' from t").is_ok());
+        assert!(cql("select writetime(v), ttl(v) from t").is_ok());
+        assert!(cql("LIST ROLES").is_ok());
+        assert!(cql("list all permissions of alice").is_ok());
+        assert!(cql("LIST USERS").is_ok());
+        let describe = cql("describe keyspaces").unwrap_err();
+        assert!(describe.contains("cqlsh"), "{describe}");
+        assert!(cql("desc table ks.t").is_err());
+        for sql in [
+            "insert into t (k) values (1)",
+            "update t set v = 1 where k = 1",
+            "delete from t where k = 1",
+            "begin batch insert into t (k) values (1); apply batch",
+            "create table t (k int primary key)",
+            "alter table t add c int",
+            "drop table t",
+            "truncate t",
+            "grant select on t to bob",
+            "revoke select on t from bob",
+            "use ks",
+            "with x as (select 1) select * from x",
+            "explain select * from t",
+            "select * from t where k = 1 delete from t",
+            "select * into t2 from t",
+        ] {
+            assert!(cql(sql).is_err(), "{sql}");
+        }
+    }
+
+    #[test]
+    fn cql_write_check() {
+        let write = |sql: &str| {
+            check_write(
+                &one_statement(sql, Engine::Cassandra).unwrap(),
+                Engine::Cassandra,
+            )
+        };
+        assert!(write("insert into ks.t (k) values (1)").is_ok());
+        assert!(write("create table ks.t (k int primary key)").is_ok());
+        assert!(write("begin batch insert into t (k) values (1); apply batch").is_ok());
+        assert!(write("BEGIN UNLOGGED BATCH delete from t where k = 1; APPLY BATCH").is_ok());
+        assert!(write("BEGIN COUNTER BATCH update t set c = c + 1; APPLY BATCH").is_ok());
+        assert!(write("begin transaction").is_err());
+        assert!(write("commit transaction").is_err());
+        assert!(write("start transaction").is_err());
+        assert!(write("commit").is_err());
+        assert!(write("rollback").is_err());
+        assert!(write("use ks").is_err());
     }
 
     #[test]

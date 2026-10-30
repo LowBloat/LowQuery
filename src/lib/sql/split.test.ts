@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { isPlsqlStart, splitStatements, statementAt, type Dialect } from "./split";
+import { isCqlBatchStart, isPlsqlStart, splitStatements, statementAt, type Dialect } from "./split";
 
 const texts = (sql: string, dialect: Dialect, blank = false) =>
 	splitStatements(sql, dialect, { blankLineDelimiter: blank }).map((s) => s.text);
@@ -173,5 +173,91 @@ describe("Redis", () => {
 		const list = splitStatements(sql, "redis");
 		expect(list.map((s) => s.text)).toEqual(['SET "a b" "x; y"', "HGETALL user:1"]);
 		expect(sql.slice(list[1].start, list[1].end)).toBe("HGETALL user:1");
+	});
+});
+
+describe("Cassandra", () => {
+	const cql = (sql: string, blank = false) => texts(sql, "cassandra", blank);
+
+	it("splits on semicolons and skips strings, quoted names and comments", () => {
+		const sql = [
+			"-- first; comment",
+			"SELECT 'a;b', \"c;d\" FROM ks.t; // second; comment",
+			"/* third; */ INSERT INTO ks.t (k, v) VALUES (1, 'it''s; fine');",
+			"SELECT * FROM \"we\"\"ird;name\"",
+		].join("\n");
+		expect(cql(sql)).toEqual([
+			"SELECT 'a;b', \"c;d\" FROM ks.t",
+			"INSERT INTO ks.t (k, v) VALUES (1, 'it''s; fine')",
+			'SELECT * FROM "we""ird;name"',
+		]);
+	});
+
+	it("does not treat a backslash as an escape", () => {
+		expect(cql("SELECT 'a\\'; SELECT 'b';")).toEqual(["SELECT 'a\\'", "SELECT 'b'"]);
+		expect(cql('SELECT "a\\"; SELECT 2;')).toEqual(['SELECT "a\\"', "SELECT 2"]);
+	});
+
+	it("does not nest block comments", () => {
+		expect(cql("/* a /* b */ SELECT 1; SELECT 2;")).toEqual(["SELECT 1", "SELECT 2"]);
+	});
+
+	it("keeps a batch whole up to APPLY BATCH", () => {
+		const batch = "BEGIN BATCH\n  INSERT INTO ks.t (k) VALUES (1);\n  INSERT INTO ks.t (k) VALUES (2);\nAPPLY BATCH";
+		expect(cql(`${batch};\nSELECT 1;`)).toEqual([batch, "SELECT 1"]);
+		expect(cql(`${batch};\nSELECT 1;`, true)).toEqual([batch, "SELECT 1"]);
+	});
+
+	it("recognizes UNLOGGED and COUNTER batches, USING TIMESTAMP and any case", () => {
+		const unlogged = "begin unlogged batch using timestamp 5 insert into t (k) values (1); apply batch";
+		const counter = "BEGIN COUNTER BATCH UPDATE t SET c = c + 1 WHERE k = 1; APPLY BATCH";
+		expect(cql(`${unlogged}; ${counter}; SELECT 1`)).toEqual([unlogged, counter, "SELECT 1"]);
+	});
+
+	it("keeps blank lines inside a batch together", () => {
+		const batch = "BEGIN BATCH\nINSERT INTO t (k) VALUES (1);\n\nINSERT INTO t (k) VALUES (2);\nAPPLY BATCH";
+		expect(cql(`${batch};`, true)).toEqual([batch]);
+	});
+
+	it("ignores APPLY BATCH inside strings and comments, and an unclosed batch runs to the end", () => {
+		const batch = "BEGIN BATCH INSERT INTO t (k, v) VALUES (1, 'APPLY BATCH;'); -- apply batch;\nAPPLY BATCH";
+		expect(cql(`${batch}; SELECT 1;`)).toEqual([batch, "SELECT 1"]);
+		expect(cql("BEGIN BATCH INSERT INTO t (k) VALUES (1); INSERT INTO t (k) VALUES (2);")).toEqual([
+			"BEGIN BATCH INSERT INTO t (k) VALUES (1); INSERT INTO t (k) VALUES (2);",
+		]);
+	});
+
+	it("does not treat other BEGIN statements as batches", () => {
+		expect(cql("BEGIN; SELECT 1;")).toEqual(["BEGIN", "SELECT 1"]);
+	});
+
+	it("keeps $$ strings whole", () => {
+		const fn =
+			"CREATE FUNCTION ks.f(a int) CALLED ON NULL INPUT RETURNS int LANGUAGE java AS $$ int x = a; return x; $$";
+		expect(cql(`${fn};\nSELECT 1;`)).toEqual([fn, "SELECT 1"]);
+		expect(cql("SELECT $$a'b;c$$ FROM t; SELECT 2;")).toEqual(["SELECT $$a'b;c$$ FROM t", "SELECT 2"]);
+	});
+
+	it("does not treat tagged dollar quotes as strings", () => {
+		expect(cql("SELECT $a$ ; $a$;")).toEqual(["SELECT $a$", "$a$"]);
+	});
+
+	it("splits statements separated by blank lines like other dialects", () => {
+		expect(cql("SELECT 1\n\nSELECT 2", true)).toEqual(["SELECT 1", "SELECT 2"]);
+	});
+
+	it("reports statement ranges", () => {
+		const sql = "USE ks;\n// c\nSELECT * FROM t;";
+		const list = splitStatements(sql, "cassandra");
+		expect(list.map((s) => sql.slice(s.start, s.end))).toEqual(["USE ks", "SELECT * FROM t"]);
+	});
+});
+
+describe("isCqlBatchStart", () => {
+	it("matches batch openers only", () => {
+		expect(isCqlBatchStart("BEGIN BATCH")).toBe(true);
+		expect(isCqlBatchStart("-- c\nbegin counter batch")).toBe(true);
+		expect(isCqlBatchStart("BEGIN TRANSACTION")).toBe(false);
+		expect(isCqlBatchStart("SELECT 1")).toBe(false);
 	});
 });

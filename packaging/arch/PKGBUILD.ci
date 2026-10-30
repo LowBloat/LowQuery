@@ -4,7 +4,7 @@
 pkgname=lowquery-bin
 pkgver=__VERSION__
 pkgrel=1
-pkgdesc="Light SQL client for PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis"
+pkgdesc="Light SQL client for PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite, Redis and Apache Cassandra"
 arch=('x86_64')
 url="https://github.com/LowBloat/LowQuery"
 license=('AGPL-3.0-only')

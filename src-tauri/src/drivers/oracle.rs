@@ -408,6 +408,7 @@ impl OraSession {
                 nullable: r[2] == "Y",
                 primary_key: r[3] == "Y",
                 default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
+                key_role: None,
             })
             .collect())
     }

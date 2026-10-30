@@ -241,6 +241,7 @@ impl LiteSession {
                 nullable: r[2] == "0",
                 primary_key: r[3] != "0",
                 default_value: Some(r[4].clone()).filter(|d| !d.is_empty()),
+                key_role: None,
             })
             .collect())
     }

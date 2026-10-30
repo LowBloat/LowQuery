@@ -11,7 +11,7 @@ import type { ColumnInfo } from "./api";
 import type { Dialect } from "./sql/split";
 import { viewSql, type ColumnFilter, type ResultView } from "./view";
 
-type SqlDialect = Exclude<Dialect, "redis">;
+type SqlDialect = Exclude<Dialect, "redis" | "cassandra">;
 
 // Four rows: 1 Alpha 2026-10-22, 2 beta 2025-01-05, 3 NULL NULL, 4 it's 2026-10-01.
 const BASE: Record<SqlDialect, string> = {

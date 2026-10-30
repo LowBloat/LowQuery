@@ -1,6 +1,6 @@
-import { MARIADB_PATH, MYSQL_PATH, POSTGRESQL_PATH, REDIS_PATH, SQLITE_PATH } from "./logos";
+import { CASSANDRA_PATH, MARIADB_PATH, MYSQL_PATH, POSTGRESQL_PATH, REDIS_PATH, SQLITE_PATH } from "./logos";
 
-export type Engine = "postgres" | "oracle" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "redis";
+export type Engine = "postgres" | "oracle" | "mysql" | "mariadb" | "sqlserver" | "sqlite" | "redis" | "cassandra";
 
 /** Lexical rules used to split scripts. */
 export type { Dialect } from "../sql/split";
@@ -23,6 +23,8 @@ export interface EngineInfo {
 	short: string;
 	/** Key-value store: commands instead of SQL, keys instead of tables. */
 	keyValue?: boolean;
+	/** No transactions: the editor hides autocommit, Commit and Rollback. */
+	noTransactions?: boolean;
 }
 
 export const ENGINES: EngineInfo[] = [
@@ -103,6 +105,18 @@ export const ENGINES: EngineInfo[] = [
 		dialect: "redis",
 		short: "RDS",
 		keyValue: true,
+	},
+	{
+		id: "cassandra",
+		label: "Apache Cassandra",
+		driver: "Native CQL protocol (scylla), Cassandra 3.x to 5.x",
+		color: "#1287B1",
+		logo: { path: CASSANDRA_PATH },
+		defaultPort: 9042,
+		file: false,
+		dialect: "cassandra",
+		short: "CASS",
+		noTransactions: true,
 	},
 ];
 

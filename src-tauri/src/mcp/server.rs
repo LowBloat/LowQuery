@@ -561,7 +561,11 @@ impl Server {
                 op(session.clone()).await
             };
             let (mut outcome, mut healthy) = self.bounded(Some(&session), cancel, work).await;
-            if healthy && read_only && session.engine() != Engine::Redis {
+            // Redis and Cassandra have no transactions to roll back.
+            if healthy
+                && read_only
+                && !matches!(session.engine(), Engine::Redis | Engine::Cassandra)
+            {
                 healthy = matches!(
                     tokio::time::timeout(GRACE, session.end_transaction(false)).await,
                     Ok(Ok(_))
@@ -621,6 +625,8 @@ async fn begin_read(session: &Session, kind: Kind) -> AppResult<()> {
         Engine::Postgres => exec(session, "SET TRANSACTION READ ONLY").await,
         Engine::Mysql | Engine::Mariadb => exec(session, "START TRANSACTION READ ONLY").await,
         Engine::Oracle if kind != Kind::Explain => exec(session, "SET TRANSACTION READ ONLY").await,
+        // SQLite is read-only by session setting; Redis and Cassandra have no
+        // read-only transaction (the guard is the protection).
         _ => Ok(()),
     }
 }
@@ -641,7 +647,7 @@ async fn make_read_only(session: &Session) -> AppResult<()> {
         }
         Engine::Sqlite => exec(session, "PRAGMA query_only = ON").await?,
         Engine::Oracle | Engine::Sqlserver => {}
-        Engine::Redis => return Ok(()),
+        Engine::Redis | Engine::Cassandra => return Ok(()),
     }
     session.set_autocommit(false).await.map(|_| ())
 }

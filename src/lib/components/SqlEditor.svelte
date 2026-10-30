@@ -27,7 +27,7 @@
 		completionKeymap,
 	} from "@codemirror/autocomplete";
 	import { highlightSelectionMatches, searchKeymap, search } from "@codemirror/search";
-	import { sql, PostgreSQL, PLSQL, MySQL, MariaSQL, MSSQL, SQLite, type SQLDialect, type SQLNamespace } from "@codemirror/lang-sql";
+	import { sql, PostgreSQL, PLSQL, MySQL, MariaSQL, MSSQL, SQLite, Cassandra, type SQLDialect, type SQLNamespace } from "@codemirror/lang-sql";
 	import { tags as t } from "@lezer/highlight";
 	import type { Engine } from "../api";
 	import { redisSupport } from "../engines/redis-language";
@@ -134,6 +134,7 @@
 		sqlserver: MSSQL,
 		sqlite: SQLite,
 		redis: PostgreSQL,
+		cassandra: Cassandra,
 	};
 
 	function languageFor(e: Engine, ns: SQLNamespace, def?: string): Extension {

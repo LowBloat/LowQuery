@@ -2,13 +2,19 @@
 //! accents, binary, JSON, dates, identity and generated columns) and loads
 //! it back: from the SQL script after dropping the table, and from CSV and
 //! JSON after deleting its rows. The rows must come back the same.
+//!
+//! Cassandra (`cassandra_export_import_round_trip`, needs `LQ_CASSANDRA_HOST`
+//! and creates the keyspace `lq_round_trip`) has no ORDER BY on this table, no
+//! identity or generated columns, and keeps its collections as CQL literals.
 
 use std::sync::atomic::AtomicBool;
+
+use futures_util::FutureExt;
 
 use super::export::{export, ExportContent, ExportFormat, ExportRequest};
 use super::import::{import, ImportRequest, ReadOptions};
 use crate::drivers::Session;
-use crate::model::{DbObject, Engine, ExecRequest};
+use crate::model::{ConnectionProfile, DbObject, Engine, ExecRequest, SslMode};
 
 struct Case {
     create: &'static str,
@@ -75,6 +81,25 @@ fn case(engine: Engine) -> Case {
             ],
             compare: "id, name, amount, born, seen, flag, data, doc, total",
         },
+        Engine::Cassandra => Case {
+            create: "CREATE TABLE lq_schema.lq_xfer (
+                id int PRIMARY KEY, name text, big varint, amount decimal, born date,
+                seen timestamp, flag boolean, data blob, uid uuid, nums list<int>,
+                tags set<text>, scores map<text, int>)",
+            fill: &[
+                "INSERT INTO lq_schema.lq_xfer (id, name, big, amount, born, seen, flag, data,
+                 uid, nums, tags, scores) VALUES (1, 'it''s \"quoted\"
+line \\ back; -- x', 123456789012345678901234567890, 1234567890.0987654321, '2024-02-29',
+                 '2024-02-29 13:45:10.250+0000', true, 0xdeadbeef,
+                 123e4567-e89b-12d3-a456-426614174000, [3, 1, 2], {'a', 'it''s, {x}'},
+                 {'k': 1, 'it''s': -2})",
+                "INSERT INTO lq_schema.lq_xfer (id, name, big, amount, flag, data)
+                 VALUES (2, 'Ação ☃', -98765432109876543210, -0.5, false, 0x)",
+                "INSERT INTO lq_schema.lq_xfer (id, born, uid) VALUES
+                 (3, '1999-12-31', 00000000-0000-1000-8000-000000000000)",
+            ],
+            compare: "id, name, big, amount, born, seen, flag, data, uid, nums, tags, scores",
+        },
         Engine::Sqlite | Engine::Redis => Case {
             create: "CREATE TABLE lq_schema.lq_xfer (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, amount NUMERIC, born TEXT,
@@ -133,8 +158,22 @@ pub async fn check(s: &Session, schema: &str) {
     for f in c.fill {
         run(s, &sql(f)).await;
     }
-    let select = format!("SELECT {} FROM {target} ORDER BY 1", up(c.compare));
-    let original = run(s, &select).await;
+    // CQL cannot ORDER BY a regular column: rows are sorted here instead (the
+    // first column is the integer key).
+    let order = if e == Engine::Cassandra {
+        ""
+    } else {
+        " ORDER BY 1"
+    };
+    let select = format!("SELECT {} FROM {target}{order}", up(c.compare));
+    let fetch = |sel: String| async move {
+        let mut rows = run(s, &sel).await;
+        if e == Engine::Cassandra {
+            rows.sort_by_key(|r| r[0].as_deref().and_then(|k| k.parse::<i64>().ok()));
+        }
+        rows
+    };
+    let original = fetch(select.clone()).await;
     assert_eq!(original.len(), 3);
 
     let cancel = AtomicBool::new(false);
@@ -168,7 +207,11 @@ pub async fn check(s: &Session, schema: &str) {
         .await
         .unwrap_or_else(|err| panic!("{err}\n{stmt}\n\nscript:\n{script}"));
     }
-    assert_eq!(run(s, &select).await, original, "SQL round trip:\n{script}");
+    assert_eq!(
+        fetch(select.clone()).await,
+        original,
+        "SQL round trip:\n{script}"
+    );
     let _ = std::fs::remove_file(&path);
 
     // CSV and JSON: delete the rows, import the file.
@@ -203,17 +246,20 @@ pub async fn check(s: &Session, schema: &str) {
             )
         });
         assert_eq!(summary.rows, 3, "{name}");
-        assert_eq!(run(s, &select).await, original, "{name} round trip");
+        assert_eq!(fetch(select.clone()).await, original, "{name} round trip");
         let _ = std::fs::remove_file(&path);
     }
 
-    // Identity generators moved past the imported values.
-    let name_col = super::sql::ident(e, &up("name"));
-    run(
-        s,
-        &format!("INSERT INTO {target} ({name_col}) VALUES ('after')"),
-    )
-    .await;
+    // Identity generators moved past the imported values (CQL has none: its
+    // keys are always given).
+    if e != Engine::Cassandra {
+        let name_col = super::sql::ident(e, &up("name"));
+        run(
+            s,
+            &format!("INSERT INTO {target} ({name_col}) VALUES ('after')"),
+        )
+        .await;
+    }
     run(s, &format!("DROP TABLE {target}")).await;
 }
 
@@ -223,6 +269,63 @@ fn dialect(e: Engine) -> &'static str {
         Engine::Oracle => "oracle",
         Engine::Mysql | Engine::Mariadb => "mysql",
         Engine::Sqlserver => "sqlserver",
-        _ => "sqlite",
+        Engine::Cassandra => "cassandra",
+        Engine::Sqlite | Engine::Redis => "sqlite",
+    }
+}
+
+fn env(name: &str) -> Option<String> {
+    std::env::var(name).ok().filter(|v| !v.is_empty())
+}
+
+#[tokio::test]
+#[ignore]
+async fn cassandra_export_import_round_trip() {
+    let Some(host) = env("LQ_CASSANDRA_HOST") else {
+        return;
+    };
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+    let profile = ConnectionProfile {
+        engine: Engine::Cassandra,
+        host,
+        port: env("LQ_CASSANDRA_PORT")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(9042),
+        user: env("LQ_CASSANDRA_USER").unwrap_or_default(),
+        datacenter: env("LQ_CASSANDRA_DC").unwrap_or_default(),
+        ssl_mode: SslMode::Disable,
+        ..Default::default()
+    };
+    let password = env("LQ_CASSANDRA_PASSWORD");
+    let s = Session::open(&profile, password.as_deref())
+        .await
+        .expect("connection");
+    let keyspace = "lq_round_trip";
+    let _ = s
+        .execute(&ExecRequest {
+            sql: format!("DROP KEYSPACE IF EXISTS {keyspace}"),
+            max_rows: 0,
+        })
+        .await;
+    run(
+        &s,
+        &format!(
+            "CREATE KEYSPACE {keyspace} WITH replication = \
+             {{'class': 'SimpleStrategy', 'replication_factor': 1}}"
+        ),
+    )
+    .await;
+    // Also when a check fails: the keyspace must not outlive the test.
+    let outcome = std::panic::AssertUnwindSafe(check(&s, keyspace))
+        .catch_unwind()
+        .await;
+    let _ = s
+        .execute(&ExecRequest {
+            sql: format!("DROP KEYSPACE IF EXISTS {keyspace}"),
+            max_rows: 0,
+        })
+        .await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
     }
 }

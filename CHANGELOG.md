@@ -4,6 +4,20 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Added
+- **Apache Cassandra** (CQL) as a connection type, on the `scylla` native driver with TLS through rustls; it works with Cassandra 3.x, 4.x and 5.x.
+  - Contact points (several, comma separated), port, optional user and password (kept in the OS credential store), default keyspace, local datacenter and TLS mode.
+  - Schema browser from `system_schema`: keyspaces (system ones last), tables, materialized views, types, functions, aggregates and indexes, with partition key, clustering and static column markers. Show DDL builds `CREATE` statements from the catalog.
+  - Exact values: `varint` and `decimal` keep every digit, `timestamp`, `date`, `time` and `duration`, `uuid`, `inet`, blobs as hex, and collections, tuples, UDTs and Cassandra 5 vectors as CQL literals that can be pasted back into an `INSERT`.
+  - Row limits use paging, so a `SELECT` on a big table reads one page, not the table; server warnings show as messages.
+  - CQL editor mode, with `BEGIN BATCH ... APPLY BATCH` run as one statement and `$$`, `--`, `//` and `/* */` handled by the script splitter. Cassandra has no transactions: the auto-commit, commit and rollback controls are hidden, and Cancel stops waiting for the answer (CQL has no server-side cancel).
+  - Grid editing for a single-table `SELECT` that includes the whole primary key; changes are saved as one logged batch.
+  - Export to SQL, CSV and JSON and import from CSV and JSON (imports run one `INSERT` at a time, with no transaction to roll back), and the AI agents (MCP) tools with a CQL-aware statement classifier.
+  - DBeaver and DataGrip connection import maps Cassandra connections.
+
+### Fixed
+- Importing a JSON file no longer rounds numbers with more than 17 digits.
+
 ## [0.5.3] - 2026-10-24
 
 ### Added

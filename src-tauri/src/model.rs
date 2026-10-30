@@ -10,6 +10,7 @@ pub enum Engine {
     Sqlserver,
     Sqlite,
     Redis,
+    Cassandra,
 }
 
 /// libpq `sslmode` values that make sense for a desktop client.
@@ -95,6 +96,7 @@ pub struct ConnectionProfile {
     pub port: u16,
     /// PostgreSQL, MySQL, SQL Server: database. Oracle: service name or SID.
     /// SQLite: path of the database file. Redis: logical database index.
+    /// Cassandra: default keyspace (optional).
     pub database: String,
     pub user: String,
     pub save_password: bool,
@@ -115,6 +117,9 @@ pub struct ConnectionProfile {
     pub windows_auth: bool,
     /// SQLite: create the file when it does not exist.
     pub create_file: bool,
+    /// Cassandra: local datacenter. Requests go to its nodes only; empty
+    /// means every node the cluster reports.
+    pub datacenter: String,
     /// Access for AI agents through `lowquery mcp`.
     pub ai_access: AiAccess,
 }
@@ -140,6 +145,7 @@ impl Default for ConnectionProfile {
             instance: String::new(),
             windows_auth: false,
             create_file: false,
+            datacenter: String::new(),
             ai_access: AiAccess::Off,
         }
     }
@@ -289,6 +295,9 @@ pub struct DbColumn {
     pub primary_key: bool,
     /// Default as an SQL expression, as the table definition writes it.
     pub default_value: Option<String>,
+    /// Cassandra: `partition`, `clustering`, `static` or `regular`. `None`
+    /// on every other engine.
+    pub key_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

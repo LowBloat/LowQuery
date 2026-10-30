@@ -1,3 +1,6 @@
+pub mod cassandra;
+#[cfg(test)]
+mod cassandra_tests;
 #[cfg(test)]
 pub(crate) mod ddl_fixtures;
 #[cfg(test)]
@@ -92,6 +95,7 @@ pub enum Session {
     SqlServer(sqlserver::MsSession),
     Sqlite(sqlite::LiteSession),
     Redis(redis_db::RedisSession),
+    Cassandra(cassandra::CassSession),
 }
 
 macro_rules! dispatch {
@@ -103,6 +107,7 @@ macro_rules! dispatch {
             Session::SqlServer($s) => $body,
             Session::Sqlite($s) => $body,
             Session::Redis($s) => $body,
+            Session::Cassandra($s) => $body,
         }
     };
 }
@@ -118,6 +123,7 @@ impl Session {
             Engine::Sqlserver => Session::SqlServer(sqlserver::connect(profile, password).await?),
             Engine::Sqlite => Session::Sqlite(sqlite::connect(profile).await?),
             Engine::Redis => Session::Redis(redis_db::connect(profile, password).await?),
+            Engine::Cassandra => Session::Cassandra(cassandra::connect(profile, password).await?),
         })
     }
 
@@ -129,6 +135,7 @@ impl Session {
             Session::SqlServer(_) => Engine::Sqlserver,
             Session::Sqlite(_) => Engine::Sqlite,
             Session::Redis(_) => Engine::Redis,
+            Session::Cassandra(_) => Engine::Cassandra,
         }
     }
 
@@ -195,6 +202,7 @@ impl Session {
             Session::Redis(_) => Err(AppError::invalid(
                 "Redis replies cannot be edited in the grid.",
             )),
+            Session::Cassandra(s) => s.apply_changes(req).await,
         }
     }
 
@@ -217,6 +225,7 @@ impl Session {
             Session::SqlServer(s) => s.stream(sql, sink).await,
             Session::Sqlite(s) => s.stream(sql, sink).await,
             Session::Redis(_) => Err(AppError::invalid("Redis keys cannot be exported yet.")),
+            Session::Cassandra(s) => s.stream(sql, sink).await,
         }
     }
 
@@ -232,6 +241,7 @@ impl Session {
             Session::Redis(_) => {
                 return Err(AppError::invalid("Redis keys have no DDL."));
             }
+            Session::Cassandra(s) => s.object_ddl(schema, name, kind).await?,
         };
         if ddl.trim().is_empty() {
             return Err(AppError::not_found(format!(

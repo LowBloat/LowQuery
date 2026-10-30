@@ -374,7 +374,7 @@ fn connection(id: &str, conn: &Obj, secret: &Obj, types: &Obj, parsed: &mut Pars
                     .push("Uses Oracle OS authentication, which LowQuery does not support.".into());
             }
         }
-        Engine::Sqlite | Engine::Redis => {}
+        Engine::Sqlite | Engine::Redis | Engine::Cassandra => {}
     }
 
     auth_model_warnings(&mut p, &text(cfg.get("auth-model")), &mut warnings);
@@ -419,6 +419,11 @@ fn engine_for(provider: &str, driver: &str) -> Result<Option<Engine>, String> {
     let unsupported = |what: &str| Err(format!("{what} is not supported by LowQuery."));
     if provider == "redis" || d.contains("redis") {
         return Ok(Some(Engine::Redis));
+    }
+    // DBeaver ships Cassandra through commercial and third-party drivers;
+    // what they have in common is the id and the `jdbc:cassandra:` URL.
+    if provider.contains("cassandra") || d.contains("cassandra") {
+        return Ok(Some(Engine::Cassandra));
     }
     match provider {
         "postgresql" | "greenplum" => {
@@ -471,7 +476,6 @@ fn product(id: &str) -> String {
         ("clickhouse", "ClickHouse"),
         ("snowflake", "Snowflake"),
         ("mongo", "MongoDB"),
-        ("cassandra", "Cassandra"),
         ("hana", "SAP HANA"),
         ("vertica", "Vertica"),
         ("exasol", "Exasol"),
@@ -514,6 +518,7 @@ fn default_port(engine: Engine) -> u16 {
         Engine::Sqlserver => 1433,
         Engine::Sqlite => 0,
         Engine::Redis => 6379,
+        Engine::Cassandra => 9042,
     }
 }
 
@@ -627,6 +632,17 @@ fn manual_target(engine: Engine, cfg: &Obj, provider_props: &Obj, p: &mut Connec
         }
         Engine::Postgres | Engine::Mysql | Engine::Mariadb => {
             p.host = host;
+            p.port = port_or(&port, p.port);
+            p.database = database;
+        }
+        // The database field holds the keyspace; contact points may be a
+        // comma-separated list.
+        Engine::Cassandra => {
+            p.host = host
+                .split([',', ';'])
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(",");
             p.port = port_or(&port, p.port);
             p.database = database;
         }
@@ -1252,6 +1268,21 @@ mod tests {
       "name": "Cache",
       "configuration": { "host": "cache", "database": "2", "configurationType": "MANUAL" }
     },
+    "cassandra-2b3c": {
+      "provider": "cassandra",
+      "driver": "cassandra_jdbc",
+      "name": "Events",
+      "configuration": { "host": "n1, n2", "database": "events", "configurationType": "MANUAL" }
+    },
+    "cassandra-url-4d5e": {
+      "provider": "generic",
+      "driver": "18f0c2a1-cassandra-custom",
+      "name": "Cassandra by URL",
+      "configuration": {
+        "url": "jdbc:cassandra://c1:9043,c2/shop?localdc=dc1",
+        "configurationType": "URL"
+      }
+    },
     "db2_luw-5a6b": {
       "provider": "db2",
       "driver": "db2_luw",
@@ -1469,6 +1500,30 @@ mod tests {
             (6379, "2")
         );
 
+        let cass = find(&p, "cassandra-2b3c");
+        assert_eq!(cass.profile.engine, Engine::Cassandra);
+        assert_eq!(
+            (
+                cass.profile.host.as_str(),
+                cass.profile.port,
+                cass.profile.database.as_str()
+            ),
+            ("n1,n2", 9042, "events")
+        );
+        let cass_url = find(&p, "cassandra-url-4d5e");
+        assert_eq!(cass_url.profile.engine, Engine::Cassandra);
+        assert_eq!(
+            (cass_url.profile.host.as_str(), cass_url.profile.port),
+            ("c1,c2", 9043)
+        );
+        assert_eq!(
+            (
+                cass_url.profile.database.as_str(),
+                cass_url.profile.datacenter.as_str()
+            ),
+            ("shop", "dc1")
+        );
+
         let custom_pg = find(&p, "custom-pg-1a1a");
         assert_eq!(custom_pg.profile.engine, Engine::Postgres);
         assert_eq!(
@@ -1483,7 +1538,7 @@ mod tests {
         );
         assert_eq!(reason(&p, "Local H2"), "H2 is not supported by LowQuery.");
         assert_eq!(reason(&p, "No host"), "No host is set.");
-        assert_eq!(p.candidates.len(), 14);
+        assert_eq!(p.candidates.len(), 16);
         assert_eq!(p.passwords.len(), 4);
         // Tunnel credentials are not connection passwords.
         assert!(!p.passwords.values().any(|v| v == "fake-pass-5"));

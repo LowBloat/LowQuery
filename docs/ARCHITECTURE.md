@@ -37,6 +37,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | `drivers/sqlserver.rs` | SQL Server and Azure SQL session on `tiberius` (TDS) |
 | `drivers/redis_db.rs` | Redis and Valkey session on `redis-rs` (RESP3) |
 | `drivers/sqlite.rs` | SQLite session on `rusqlite` (bundled engine) |
+| `drivers/cassandra.rs` | Apache Cassandra session on `scylla` (CQL native protocol); `cassandra_tests.rs` holds its tests against a real server |
 | `mcp/` | `lowquery mcp`: MCP server over stdio for AI agents (`server.rs` protocol and sessions, `tools.rs`, `guard.rs` statement checks, `catalog.rs` search/foreign keys/plans per engine, `audit.rs` activity log); see [AI.md](AI.md) |
 | `transfer/` | Export to SQL, CSV and JSON and import from CSV and JSON (`export.rs`, `import.rs`, `sql.rs` literals, `catalog.rs` generated and identity columns, foreign key order) |
 | `ai_setup.rs` | The MCP command and the configuration of each AI client |
@@ -88,6 +89,17 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 - The tree lists databases (`db0`...) and up to 1000 keys per database with `SCAN` and `TYPE`; ▶ runs the read command that fits the key type.
 - There is no autocommit: `MULTI` opens a queue that the toolbar's EXEC and DISCARD close. Cancel only works for blocking commands, through `CLIENT UNBLOCK` from a second connection.
 
+### Apache Cassandra
+
+- The `scylla` driver speaks the CQL native protocol to Apache Cassandra 3.x, 4.x and 5.x. Statements are sent as text, unprepared, at consistency `LOCAL_ONE`; contact points are comma separated, and a local datacenter limits requests to its nodes. TLS uses rustls (`prefer` and `require` encrypt without validating the certificate; `verify-full` checks the chain against the system and bundled roots, but not the host name, because the driver connects to the addresses the cluster reports).
+- Rows are read with paging: the page size is derived from the row limit and reading stops at `max_rows + 1`. Values keep their exact CQL text; collections, tuples, UDTs and vectors are valid CQL literals, so a cell can be pasted into an `INSERT`. `cql_literal` turns cell text back into a literal per column type (used by grid edits, export and import).
+- There are no transactions: the session is always in autocommit mode (the interface hides the controls), `BEGIN BATCH ... APPLY BATCH` is one statement, and saving grid edits sends one logged batch. CQL writes are upserts, so an UPDATE or DELETE never reports a missing row.
+- CQL has no server-side cancel. Cancel stops waiting (the request future is dropped); the coordinator finishes or times out on its own.
+- Server warnings arrive as messages, like PostgreSQL notices.
+- The schema browser reads `system_schema` (and `system_virtual_schema` for the virtual keyspaces of 4.0+): keyspaces are the schemas; tables, materialized views, types, functions and aggregates (named `name(argument types)`, since CQL allows overloads) and indexes are the objects. `DESCRIBE` is a cqlsh command, not part of the protocol, so `object_ddl` builds the `CREATE` statements from the catalog.
+- Result editing: a `SELECT` on one table whose columns include the whole primary key (partition and clustering columns); expressions, aliases, counters, materialized views and system tables are read-only.
+- Imports run one `INSERT` per row without a transaction (multi-partition batches are an anti-pattern in Cassandra), so a failed import leaves the rows already written.
+
 ## Interface side (`src`)
 
 | Path | Responsibility |
@@ -121,6 +133,7 @@ LowQuery is a Tauri 2 desktop app. The interface is Svelte 5 with the [CodeAtlas
 | MySQL, MariaDB | `SHOW CREATE TABLE/VIEW/FUNCTION/PROCEDURE/SEQUENCE`, triggers with `SHOW CREATE TRIGGER`, routines between `DELIMITER` lines |
 | SQL Server | `OBJECT_DEFINITION` for views, routines and triggers; tables, sequences, synonyms and alias types scripted from `sys.*` views; batches separated by `GO` |
 | SQLite | The statements kept in `sqlite_schema` for the table, its indexes and triggers |
+| Apache Cassandra | `system_schema`: `CREATE TABLE` with its primary key, clustering order and options followed by the table's `CREATE INDEX` statements; materialized views, types, functions, aggregates, indexes and keyspaces |
 
 The statements the menus and the table designer run come from `lib/sql/ddl.ts`. They run one at a time on the tree's session (never a tab's, so an open transaction in a tab is not touched), and every one is shown before it runs. `ddl.fixtures.json` holds them for a fixed scenario per dialect; `drivers/ddl_fixtures.rs` runs that scenario on every database in CI, including a round trip of the DDL each driver reads back (drop the object, run its DDL, compare the columns).
 
@@ -147,6 +160,7 @@ A result is editable only when the driver can prove which table row each grid ro
 | MySQL, MariaDB | `org_table`/`org_name`/`schema` of each column plus the alias; key from `information_schema` | Several tables or aliases, set operators, views, temporary tables |
 | SQL Server | `sys.dm_exec_describe_first_result_set` in browse mode, with the keys from `sys.indexes` in the same batch | Several tables or the same table twice, computed and rowversion columns, temp tables |
 | SQLite | Column metadata (`sqlite3_column_table_name`) checked against `EXPLAIN QUERY PLAN`; `rowid` works as the key of a table without one | Compound selects, more than one table scan, results without the key |
+| Apache Cassandra | The table of each result column (the result metadata names it); keys from `system_schema.columns` | Several tables, aliases, counters, views, system tables, results without the whole primary key |
 
 `apply_changes` receives the target and a list of updates (old key plus new values), deletes and inserts. Each driver builds one statement per change with quoted, schema-qualified names and binds every value, converting the text the grid shows back into the column type the engine's own way (typed binds or explicit conversions that do not depend on session date or number formats). Every UPDATE and DELETE must touch exactly one row. With autocommit on the whole save is one transaction; inside an open transaction it runs behind a savepoint, so a failed save is undone without losing earlier work. After saving, the interface runs the query again to show what the database now holds.
 

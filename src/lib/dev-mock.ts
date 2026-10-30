@@ -30,6 +30,15 @@ const profiles: ConnectionProfile[] = [
 		windowsAuth: true,
 	},
 	{ ...emptyProfile("sqlite"), id: "lite1", name: "Local cache", database: String.raw`C:\data\cache.db` },
+	{
+		...emptyProfile("cassandra"),
+		id: "cass1",
+		name: "Events cluster",
+		host: "cass-1.internal,cass-2.internal",
+		database: "shop",
+		user: "app",
+		datacenter: "dc1",
+	},
 ];
 
 // tnsnames.ora entries as the backend reports them (see src-tauri/src/drivers/tns.rs).
@@ -148,6 +157,130 @@ const TABLE_COLUMNS: Record<string, DbColumn[]> = {
 		{ name: "revenue", typeName: "numeric", nullable: true, primaryKey: false },
 	],
 };
+
+// ---- Cassandra ---------------------------------------------------------------
+
+const CQL_KEYSPACES = ["shop", "system_auth", "system_schema", "system", "system_distributed", "system_traces", "system_views", "system_virtual_schema"];
+
+const CQL_OBJECTS = [
+	{ name: "events", kind: "table" },
+	{ name: "users_by_email", kind: "table" },
+	{ name: "events_by_kind", kind: "matview" },
+	{ name: "address", kind: "type" },
+	{ name: "lq_double(int)", kind: "function" },
+	{ name: "lq_total", kind: "aggregate" },
+	{ name: "events_kind_idx", kind: "index" },
+];
+
+const cqlCol = (name: string, typeName: string, keyRole: NonNullable<DbColumn["keyRole"]>): DbColumn => ({
+	name,
+	typeName,
+	nullable: keyRole === "regular" || keyRole === "static",
+	primaryKey: keyRole === "partition" || keyRole === "clustering",
+	defaultValue: null,
+	keyRole,
+});
+
+const CQL_EVENT_COLUMNS: DbColumn[] = [
+	cqlCol("tenant", "text", "partition"),
+	cqlCol("day", "date", "partition"),
+	cqlCol("ts", "timestamp", "clustering"),
+	cqlCol("id", "uuid", "clustering"),
+	cqlCol("tenant_name", "text", "static"),
+	cqlCol("kind", "text", "regular"),
+	cqlCol("tags", "set<text>", "regular"),
+	cqlCol("attrs", "map<text, int>", "regular"),
+	cqlCol("payload", "blob", "regular"),
+];
+
+const CQL_COLUMNS: Record<string, DbColumn[]> = {
+	events: CQL_EVENT_COLUMNS,
+	events_by_kind: CQL_EVENT_COLUMNS.map((c) => ({ ...c, keyRole: c.primaryKey ? c.keyRole : "regular" as const })),
+	users_by_email: [
+		cqlCol("email", "text", "partition"),
+		cqlCol("name", "text", "regular"),
+		cqlCol("address", "frozen<address>", "regular"),
+		cqlCol("embedding", "vector<float, 3>", "regular"),
+	],
+};
+
+const CQL_EVENTS_DDL = `CREATE TABLE shop.events (
+    tenant text,
+    day date,
+    ts timestamp,
+    id uuid,
+    tenant_name text STATIC,
+    kind text,
+    tags set<text>,
+    attrs map<text, int>,
+    payload blob,
+    PRIMARY KEY ((tenant, day), ts, id)
+) WITH CLUSTERING ORDER BY (ts DESC, id ASC)
+    AND comment = ''
+    AND default_time_to_live = 0;
+
+CREATE INDEX events_kind_idx ON shop.events (kind);
+`;
+
+const CQL_KINDS = ["login", "logout", "purchase", "refund", "view"];
+const CQL_EVENTS: (string | null)[][] = Array.from({ length: 240 }, (_, i) => {
+	const ts = new Date(Date.UTC(2024, 4, 6, 7, 8, 9, 123) - i * 61_000);
+	const hex = (n: number, len: number) => Math.floor(rand(n) * 16 ** len).toString(16).padStart(len, "0");
+	return [
+		i % 3 === 0 ? "acme" : "globex",
+		ts.toISOString().slice(0, 10),
+		`${ts.toISOString().slice(0, 19).replace("T", " ")}.${String(ts.getUTCMilliseconds()).padStart(3, "0")}+0000`,
+		`${hex(i, 8)}-${hex(i + 1, 4)}-4${hex(i + 2, 3)}-a${hex(i + 3, 3)}-${hex(i + 4, 12)}`,
+		i % 3 === 0 ? "Acme Corp" : "Globex",
+		CQL_KINDS[i % CQL_KINDS.length],
+		i % 4 === 0 ? "{'mobile', 'web'}" : i % 4 === 1 ? "{'web'}" : null,
+		`{'items': ${(i % 5) + 1}, 'retries': ${i % 2}}`,
+		i % 7 === 0 ? `0x${hex(i + 9, 8)}` : null,
+	];
+});
+
+const CQL_TARGET: EditTarget = {
+	schema: "shop",
+	table: "events",
+	columns: CQL_EVENT_COLUMNS.map((c) => ({ name: c.name, typeName: c.typeName })),
+	key: [0, 1, 2, 3],
+};
+
+const CQL_EVENT_RESULT_COLUMNS = [
+	{ name: "tenant", typeName: "text", kind: "text" },
+	{ name: "day", typeName: "date", kind: "temporal" },
+	{ name: "ts", typeName: "timestamp", kind: "temporal" },
+	{ name: "id", typeName: "uuid", kind: "text" },
+	{ name: "tenant_name", typeName: "text", kind: "text" },
+	{ name: "kind", typeName: "text", kind: "text" },
+	{ name: "tags", typeName: "set<text>", kind: "other" },
+	{ name: "attrs", typeName: "map<text, int>", kind: "other" },
+	{ name: "payload", typeName: "blob", kind: "binary" },
+] satisfies ExecResult["columns"];
+
+function executeCql(sql: string, maxRows: number): ExecResult {
+	const s = sql.trim().toLowerCase();
+	const base = { truncated: false, rowsAffected: null, notices: [], inTransaction: false, elapsedMs: 8, editable: null, readOnlyReason: null };
+	if (s.startsWith("select")) {
+		const limit = /\blimit\s+(\d+)/.exec(s);
+		const rows = limit ? CQL_EVENTS.slice(0, Number(limit[1])) : CQL_EVENTS;
+		const events = /\bfrom\s+(shop\.)?events\b/.test(s);
+		if (!events) {
+			return { ...base, columns: [{ name: "count", typeName: "bigint", kind: "number" }], rows: [[String(CQL_EVENTS.length)]] };
+		}
+		return {
+			...base,
+			truncated: maxRows > 0 && rows.length > maxRows,
+			editable: CQL_TARGET,
+			columns: CQL_EVENT_RESULT_COLUMNS,
+			rows: maxRows > 0 ? rows.slice(0, maxRows) : rows,
+		};
+	}
+	if (s.startsWith("insert") || s.startsWith("update") || s.startsWith("delete") || s.startsWith("begin")) {
+		return { ...base, columns: null, rows: [] };
+	}
+	return { ...base, columns: null, rows: [] };
+}
 
 function execute(sql: string, maxRows: number): ExecResult {
 	const s = sql.trim().toLowerCase();
@@ -404,6 +537,8 @@ function IMPORT_PREVIEW(delimiter: string, header: boolean) {
 
 export function installDevMock() {
 	let n = 0;
+	const sessionEngines = new Map<string, string>();
+	const isCql = (args: Record<string, any>) => sessionEngines.get(args.sessionId) === "cassandra";
 	mockIPC(async (cmd, payload) => {
 		const args = (payload ?? {}) as Record<string, any>;
 		await new Promise((r) => setTimeout(r, 120));
@@ -428,20 +563,25 @@ export function installDevMock() {
 				return { serverVersion: "PostgreSQL 17.2" };
 			case "open_session": {
 				const p = profiles.find((x) => x.id === args.profileId)!;
+				const sessionId = `s${++n}`;
+				sessionEngines.set(sessionId, p.engine);
 				return {
-					sessionId: `s${++n}`,
+					sessionId,
 					profileId: p.id,
 					engine: p.engine,
-					serverVersion: p.engine === "postgres" ? "PostgreSQL 17.2" : "Oracle 23.6.0.24.10",
+					serverVersion:
+						p.engine === "postgres" ? "PostgreSQL 17.2" : p.engine === "cassandra" ? "Cassandra 5.0.2" : "Oracle 23.6.0.24.10",
 					currentUser: p.user,
-					currentSchema: p.engine === "postgres" ? "public" : p.user,
+					currentSchema: p.engine === "postgres" ? "public" : p.engine === "cassandra" ? p.database || null : p.user,
 					autocommit: true,
 				};
 			}
 			case "execute":
-				return execute(args.request.sql, args.request.maxRows);
+				return sessionEngines.get(args.sessionId) === "cassandra"
+					? executeCql(args.request.sql, args.request.maxRows)
+					: execute(args.request.sql, args.request.maxRows);
 			case "apply_changes":
-				return applyChanges(args.request);
+				return sessionEngines.get(args.sessionId) === "cassandra" ? { updated: 0, deleted: 0, inserted: 0, elapsedMs: 5, inTransaction: false } : applyChanges(args.request);
 			case "ai_setup":
 				return AI_SETUP;
 			case "ai_connect_client": {
@@ -469,8 +609,9 @@ export function installDevMock() {
 				return { created: args.keys.length, passwords };
 			}
 			case "list_schemas":
-				return ["public", "sales", "audit", "information_schema", "pg_catalog"];
+				return isCql(args) ? CQL_KEYSPACES : ["public", "sales", "audit", "information_schema", "pg_catalog"];
 			case "list_objects":
+				if (isCql(args)) return args.schema === "shop" ? CQL_OBJECTS : [];
 				return [
 					{ name: "customers", kind: "table" },
 					{ name: "orders", kind: "table" },
@@ -480,7 +621,7 @@ export function installDevMock() {
 					{ name: "recalc_balance(integer)", kind: "function" },
 				];
 			case "list_columns":
-				return TABLE_COLUMNS[args.table] ?? CUSTOMER_COLUMNS;
+				return isCql(args) ? (CQL_COLUMNS[args.table] ?? []) : (TABLE_COLUMNS[args.table] ?? CUSTOMER_COLUMNS);
 			case "plugin:dialog|save":
 				return `C:/Users/demo/Documents/${args.options?.defaultPath ?? "export.sql"}`;
 			case "plugin:dialog|open": {
@@ -504,7 +645,7 @@ export function installDevMock() {
 			case "read_sql_file":
 				return "-- dump\nCREATE TABLE t (id int);\nINSERT INTO t VALUES (1);\nINSERT INTO t VALUES (2);\n";
 			case "object_ddl":
-				return args.name === "customers" ? CUSTOMERS_DDL : `-- ${args.kind} ${args.schema}.${args.name}
+				return isCql(args) && args.name === "events" ? CQL_EVENTS_DDL : args.name === "customers" ? CUSTOMERS_DDL : `-- ${args.kind} ${args.schema}.${args.name}
 CREATE ${args.kind.toUpperCase()} ${args.schema}.${args.name} ...;
 `;
 			case "set_autocommit":

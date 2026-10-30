@@ -23,7 +23,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net", "io-util", "io-std"] }
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -47,6 +47,8 @@ tiberius = { version = "0.13", default-features = false, features = ["tds80", "r
 tokio-util = { version = "0.7", features = ["compat"] }
 # Redis: RESP protocol over tokio, TLS through rustls.
 redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "tokio-rustls-comp", "tls-rustls-insecure", "tls-rustls-webpki-roots"] }
+# Apache Cassandra: native CQL protocol (v4/v5), TLS through rustls.
+scylla = { version = "1.9", default-features = false, features = ["rustls-023"] }
 # SQLite: embedded engine compiled into the app.
 rusqlite = { version = "0.40", features = ["bundled", "column_decltype", "column_metadata"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }

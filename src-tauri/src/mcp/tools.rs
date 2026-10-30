@@ -10,7 +10,7 @@ use super::guard;
 use super::server::{CallInfo, Cancel, Kind, Reply, Server};
 use crate::error::AppError;
 use crate::model::{
-    AiAccess, ConnectionProfile, Engine, ExecRequest, ExecResult, OracleConnectType,
+    AiAccess, ConnectionProfile, DbColumn, Engine, ExecRequest, ExecResult, OracleConnectType,
 };
 
 const READ_ONLY: &str = "This connection is read-only for AI agents. Ask the user to allow changes in LowQuery (connection → AI access).";
@@ -117,7 +117,7 @@ pub fn list(version: &str) -> Value {
         tool(
             "list_schemas",
             "List schemas",
-            "Lists the schemas (databases on MySQL, attached databases on SQLite, db0... on Redis) of a connection, and the current one.",
+            "Lists the schemas (databases on MySQL, attached databases on SQLite, keyspaces on Cassandra, db0... on Redis) of a connection, and the current one.",
             object(json!({ "connection": connection_prop() }), &["connection"]),
             json!({
                 "type": "object",
@@ -156,7 +156,7 @@ pub fn list(version: &str) -> Value {
         tool(
             "describe_table",
             "Describe table",
-            "Columns of a table or view (name, type, nullable, primary key) and its foreign keys, both outgoing and those referencing it. Read this before writing SQL against a table.",
+            "Columns of a table or view (name, type, nullable, primary key; on Cassandra the key role: partition, clustering, static or regular) and its foreign keys, both outgoing and those referencing it. Read this before writing SQL against a table.",
             object(
                 json!({
                     "connection": connection_prop(),
@@ -174,7 +174,8 @@ pub fn list(version: &str) -> Value {
                         "type": "object",
                         "properties": {
                             "name": { "type": "string" }, "type": { "type": "string" },
-                            "nullable": { "type": "boolean" }, "primaryKey": { "type": "boolean" }
+                            "nullable": { "type": "boolean" }, "primaryKey": { "type": "boolean" },
+                            "keyRole": { "type": ["string", "null"] }
                         },
                         "required": ["name", "type", "nullable", "primaryKey"]
                     } },
@@ -188,7 +189,7 @@ pub fn list(version: &str) -> Value {
         tool(
             "search_objects",
             "Search objects",
-            "Finds tables, views and columns whose name contains the pattern (case-insensitive) across the schemas of a connection; exact and prefix matches first. On Redis, finds keys.",
+            "Finds tables, views and columns whose name contains the pattern (case-insensitive) across the schemas of a connection (on Cassandra: tables, materialized views, columns and user-defined types of every keyspace); exact and prefix matches first. On Redis, finds keys.",
             object(
                 json!({
                     "connection": connection_prop(),
@@ -214,7 +215,7 @@ pub fn list(version: &str) -> Value {
         tool(
             "query",
             "Run a query",
-            "Runs ONE read statement (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN without ANALYZE, VALUES, TABLE, reading PRAGMAs; on Redis one read command) in the connection's dialect and returns the rows as a table. Rows are capped at max_rows; select only the columns you need and filter in SQL.",
+            "Runs ONE read statement (SELECT, WITH, SHOW, DESCRIBE, EXPLAIN without ANALYZE, VALUES, TABLE, reading PRAGMAs; on Cassandra SELECT and LIST; on Redis one read command) in the connection's dialect (CQL on Cassandra) and returns the rows as a table. Rows are capped at max_rows; select only the columns you need and filter in SQL.",
             object(
                 json!({
                     "connection": connection_prop(),
@@ -241,7 +242,7 @@ pub fn list(version: &str) -> Value {
         tool(
             "execute",
             "Execute a change",
-            "Runs ONE statement of any kind (INSERT, UPDATE, DELETE, DDL, a procedure call; on Redis one command) on a connection with write access, and commits it. Use only when the user asked for the change. Returns rows affected, notices and any rows. Transaction control (BEGIN, COMMIT...) is refused: each call commits on its own.",
+            "Runs ONE statement of any kind (INSERT, UPDATE, DELETE, DDL, a procedure call, a CQL BEGIN BATCH ... APPLY BATCH; on Redis one command) on a connection with write access, and commits it. Use only when the user asked for the change. Returns rows affected, notices and any rows. Transaction control (BEGIN, COMMIT...) is refused: each call commits on its own.",
             object(
                 json!({
                     "connection": connection_prop(),
@@ -307,6 +308,7 @@ pub fn engine_label(engine: Engine) -> &'static str {
         Engine::Sqlserver => "SQL Server",
         Engine::Sqlite => "SQLite",
         Engine::Redis => "Redis",
+        Engine::Cassandra => "Cassandra",
     }
 }
 
@@ -318,6 +320,7 @@ fn dialect_notes(engine: Engine) -> &'static str {
         Engine::Mariadb => "MariaDB: LIMIT n; backtick-quote names; databases are the schemas.",
         Engine::Sqlserver => "SQL Server (T-SQL): SELECT TOP (n) or ORDER BY ... OFFSET 0 ROWS FETCH NEXT n ROWS ONLY; [bracket] names; schema.table names (dbo.x).",
         Engine::Sqlite => "SQLite: LIMIT n; flexible column types; schemas are attached databases (main).",
+        Engine::Cassandra => "Cassandra (CQL): no joins or subqueries; filter on the partition key (other columns need an index or ALLOW FILTERING); LIMIT n; keyspaces are the schemas (write keyspace.table); names are lowercase unless double-quoted; text literals use single quotes.",
         Engine::Redis => "Redis: not SQL; pass one redis-cli command, such as GET key, HGETALL key or SCAN 0 MATCH user:* COUNT 100 (KEYS is refused).",
     }
 }
@@ -371,6 +374,7 @@ fn location(p: &ConnectionProfile) -> String {
             with_port(&p.host, p.port),
             if db.is_empty() { "0" } else { db }
         )),
+        Engine::Cassandra if db.is_empty() => at(with_port(&p.host, p.port)),
         _ => at(format!("{}/{db}", with_port(&p.host, p.port))),
     }
 }
@@ -380,6 +384,18 @@ fn access_label(p: &ConnectionProfile) -> &'static str {
         "write"
     } else {
         "read"
+    }
+}
+
+/// The `key` cell of describe_table: PK, and on Cassandra the role of the
+/// column in the key.
+fn key_label(c: &DbColumn) -> &'static str {
+    match c.key_role.as_deref() {
+        Some("partition") => "PK (partition)",
+        Some("clustering") => "PK (clustering)",
+        Some("static") => "static",
+        _ if c.primary_key => "PK",
+        _ => "",
     }
 }
 
@@ -621,14 +637,18 @@ async fn describe_table(
             c.name,
             c.type_name,
             if c.nullable { "yes" } else { "no" },
-            if c.primary_key { "PK" } else { "" }
+            key_label(c)
         ));
-        cols.push(json!({
+        let mut col = json!({
             "name": c.name,
             "type": c.type_name,
             "nullable": c.nullable,
             "primaryKey": c.primary_key,
-        }));
+        });
+        if let Some(role) = &c.key_role {
+            col["keyRole"] = json!(role);
+        }
+        cols.push(col);
     }
     let mut structured = json!({ "schema": schema, "table": name, "columns": cols });
     match fks {
@@ -963,6 +983,13 @@ mod tests {
         ms.instance = "SQLEXPRESS".into();
         ms.windows_auth = true;
         assert_eq!(location(&ms), "Windows account@db.local\\SQLEXPRESS/app");
+        let mut cass = profile(Engine::Cassandra);
+        cass.port = 9042;
+        assert_eq!(location(&cass), "ann@db.local:9042/app");
+        cass.database.clear();
+        assert_eq!(location(&cass), "ann@db.local:9042");
+        assert_eq!(engine_label(Engine::Cassandra), "Cassandra");
+        assert!(dialect_notes(Engine::Cassandra).contains("ALLOW FILTERING"));
     }
 
     #[test]

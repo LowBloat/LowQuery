@@ -63,6 +63,8 @@ const KIND_NAME: Record<string, string> = {
 	package: "package",
 	type: "type",
 	synonym: "synonym",
+	aggregate: "aggregate",
+	index: "index",
 };
 
 /** "table", "materialized view"... and "key" for Redis keys. */
@@ -209,6 +211,25 @@ class Actions {
 			return;
 		}
 		const word = database ? "database" : ddl.schemaWord(e);
+		if (e === "cassandra") {
+			const dc = p.datacenter.trim() || "datacenter1";
+			this.ask({
+				title: "Create keyspace",
+				description: "SimpleStrategy keeps one replica and suits a single node. NetworkTopologyStrategy keeps three replicas in the datacenter below.",
+				profile: p,
+				confirmLabel: "Create",
+				input: { label: "Name", value: "", placeholder: "new_keyspace" },
+				options: [{ id: "network", label: `NetworkTopologyStrategy in ${dc} (otherwise SimpleStrategy)`, checked: !!p.datacenter.trim() }],
+				build: ({ input, options }) => {
+					const name = ddl.foldName(input, e);
+					if (!name) return plan([], ["Type a name for the keyspace."]);
+					return plan(ddl.createKeyspaceSql(name, options.network ? "network" : "simple", dc));
+				},
+				success: ({ input }) => `Keyspace ${ddl.foldName(input, e)} created`,
+				after: () => explorer.refresh(p),
+			});
+			return;
+		}
 		this.ask({
 			title: `Create ${word}`,
 			profile: p,
@@ -238,7 +259,7 @@ class Actions {
 		this.designer = { profile: p, schema: s.name, table: null, columns: [] };
 	}
 
-	template(p: ConnectionProfile, s: SchemaNode, kind: "view" | "function" | "procedure" | "sequence") {
+	template(p: ConnectionProfile, s: SchemaNode, kind: ddl.TemplateKind) {
 		workspace.openScript(p.id, `New ${kind}`, ddl.objectTemplate(kind, s.name, p.engine));
 	}
 
@@ -348,7 +369,9 @@ ${command}`);
 
 	async createIndex(p: ConnectionProfile, s: SchemaNode, o: ObjectNode) {
 		const cols = await explorer.columns(p, s, o).catch(() => []);
-		const sql = ddl.createIndexSql(s.name, o.name, cols[0]?.name ?? "column_name", p.engine);
+		// Cassandra indexes a regular column, not the key it already reads by.
+		const first = (p.engine === "cassandra" ? cols.find((c) => c.keyRole === "regular") : null) ?? cols[0];
+		const sql = ddl.createIndexSql(s.name, o.name, first?.name ?? "column_name", p.engine);
 		workspace.openScript(p.id, `Index on ${o.name}`, ddl.toScript([sql], p.engine));
 	}
 
@@ -401,7 +424,9 @@ ${command}`);
 			description:
 				p.engine === "sqlite"
 					? "Deletes every row of the table."
-					: "TRUNCATE removes every row at once. Most databases cannot roll it back.",
+					: p.engine === "cassandra"
+						? "TRUNCATE removes every row of the table on every replica. It cannot be undone, and it fails when a node is down."
+						: "TRUNCATE removes every row at once. Most databases cannot roll it back.",
 			profile: p,
 			confirmLabel: "Empty table",
 			destructive: true,
@@ -415,7 +440,12 @@ ${command}`);
 		const cascade = ddl.dropCascades(o.kind, p.engine);
 		this.ask({
 			title: `Drop ${kind} ${o.name}?`,
-			description: o.kind === "table" ? "The table and its rows are lost. It cannot be undone." : "It cannot be undone.",
+			description:
+				o.kind === "table"
+					? "The table and its rows are lost. It cannot be undone."
+					: o.kind === "matview" && p.engine === "cassandra"
+						? "The materialized view and its rows are dropped. The base table is not changed."
+						: "It cannot be undone.",
 			profile: p,
 			confirmLabel: "Drop",
 			destructive: true,

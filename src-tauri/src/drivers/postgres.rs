@@ -566,6 +566,7 @@ impl PgSession {
                 nullable: r.get(2),
                 primary_key: r.get(3),
                 default_value: r.get(4),
+                key_role: None,
             })
             .collect())
     }
@@ -1462,7 +1463,7 @@ pub fn map_error(e: tokio_postgres::Error) -> AppError {
     AppError::connection(message)
 }
 
-fn tls_config(mode: SslMode) -> AppResult<rustls::ClientConfig> {
+pub(super) fn tls_config(mode: SslMode) -> AppResult<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_safe_default_protocol_versions()

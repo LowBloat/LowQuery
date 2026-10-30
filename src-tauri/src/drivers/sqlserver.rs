@@ -786,6 +786,7 @@ impl MsSession {
                     nullable: text(2) == "true",
                     primary_key: text(3) == "true",
                     default_value: r.get(4).cloned().flatten(),
+                    key_role: None,
                 }
             })
             .collect())

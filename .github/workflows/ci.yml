@@ -313,6 +313,47 @@ jobs:
       - name: MCP tests against a real server
         run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml mcp_redis -- --ignored --test-threads=1
 
+  cassandra:
+    name: Cassandra ${{ matrix.version }} integration
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["4.1", "5.0"]
+    services:
+      cassandra:
+        image: cassandra:${{ matrix.version }}
+        env:
+          MAX_HEAP_SIZE: 1G
+          HEAP_NEWSIZE: 200M
+        ports: ["9042:9042"]
+        # The server takes about a minute to accept CQL connections.
+        options: >-
+          --health-cmd "cqlsh -e 'SELECT release_version FROM system.local'"
+          --health-interval 15s --health-timeout 10s --health-retries 20 --health-start-period 40s
+    env:
+      LQ_CASSANDRA_HOST: 127.0.0.1
+      LQ_CASSANDRA_PORT: "9042"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: src-tauri
+          key: cassandra
+      - name: Install Linux desktop dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev
+      - run: mkdir -p dist
+      - name: Integration tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml drivers::cassandra -- --ignored --test-threads=1
+      - name: MCP tests against a real server
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml mcp_cassandra -- --ignored --test-threads=1
+      - name: Export and import round trip
+        run: cargo test --locked --lib --manifest-path src-tauri/Cargo.toml cassandra_export_import -- --ignored --test-threads=1
+
   # Builds the native Arch package the release publishes. Manual runs only:
   # it compiles the whole app, which pull requests do not need.
   arch-package:

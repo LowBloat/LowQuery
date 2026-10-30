@@ -2,7 +2,9 @@
 //! delimiter and header are detected; columns are matched by name; values
 //! written the way spreadsheets in many locales write them (`1.234,56`,
 //! `31/12/2024`, `sim`) are converted for the column's type. Everything runs
-//! in one transaction: an error leaves the table as it was.
+//! in one transaction: an error leaves the table as it was. Cassandra has no
+//! transactions: its rows are inserted one statement at a time, and an error
+//! leaves the rows written so far.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -14,7 +16,7 @@ use super::sql::{self, InsertTarget};
 use super::Progress;
 use crate::drivers::Session;
 use crate::error::{AppError, AppResult};
-use crate::model::{ExecRequest, ValueKind};
+use crate::model::{Engine, ExecRequest, ValueKind};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -204,43 +206,100 @@ fn parse_csv(text: &str, delimiter: char) -> Vec<Vec<String>> {
 /// Column names and rows, every value as text.
 type Table = (Vec<String>, Vec<Vec<Option<String>>>);
 
+/// One JSON record with its values kept as the text they were written in:
+/// parsing numbers into `f64` would cut `NUMERIC`, `BIGINT` and varint values
+/// to 17 digits.
+struct Record(Vec<(String, Option<String>)>);
+
+impl<'de> serde::Deserialize<'de> for Record {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = Record;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an object with one key per column")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Record, A::Error> {
+                let mut fields: Vec<(String, Option<String>)> = Vec::new();
+                while let Some((key, raw)) =
+                    map.next_entry::<String, Box<serde_json::value::RawValue>>()?
+                {
+                    let value = raw_text(raw.get()).map_err(serde::de::Error::custom)?;
+                    // As in a JSON object, the last of repeated keys wins.
+                    match fields.iter_mut().find(|(k, _)| *k == key) {
+                        Some(slot) => slot.1 = value,
+                        None => fields.push((key, value)),
+                    }
+                }
+                Ok(Record(fields))
+            }
+        }
+        d.deserialize_map(Fields)
+    }
+}
+
+/// A raw JSON value as the text of the cell: strings unescaped, numbers as
+/// written, `null` as no value, arrays, objects and booleans compact.
+fn raw_text(raw: &str) -> Result<Option<String>, serde_json::Error> {
+    let raw = raw.trim();
+    match raw.as_bytes().first() {
+        Some(b'"') => serde_json::from_str::<String>(raw).map(Some),
+        Some(b'-' | b'0'..=b'9') => Ok(Some(raw.to_string())),
+        _ => Ok(match serde_json::from_str::<serde_json::Value>(raw)? {
+            serde_json::Value::Null => None,
+            other => Some(other.to_string()),
+        }),
+    }
+}
+
 fn parse_json(text: &str) -> AppResult<Table> {
-    let values: Vec<serde_json::Value> = if text.trim_start().starts_with('[') {
-        serde_json::from_str(text)
-            .map_err(|e| AppError::invalid(format!("The JSON file is not valid: {e}")))?
+    const NOT_AN_OBJECT: &str = "Each JSON item must be an object with one key per column.";
+    let not_object = |e: &serde_json::Error| e.to_string().contains("one key per column");
+    let records: Vec<Record> = if text.trim_start().starts_with('[') {
+        serde_json::from_str(text).map_err(|e| {
+            if not_object(&e) {
+                AppError::invalid(NOT_AN_OBJECT)
+            } else {
+                AppError::invalid(format!("The JSON file is not valid: {e}"))
+            }
+        })?
     } else {
         text.lines()
             .filter(|l| !l.trim().is_empty())
             .enumerate()
             .map(|(i, l)| {
                 serde_json::from_str(l).map_err(|e| {
-                    AppError::invalid(format!("Line {} is not valid JSON: {e}", i + 1))
+                    if not_object(&e) {
+                        AppError::invalid(NOT_AN_OBJECT)
+                    } else {
+                        AppError::invalid(format!("Line {} is not valid JSON: {e}", i + 1))
+                    }
                 })
             })
             .collect::<AppResult<_>>()?
     };
     let mut columns: Vec<String> = Vec::new();
-    for v in &values {
-        let Some(obj) = v.as_object() else {
-            return Err(AppError::invalid(
-                "Each JSON item must be an object with one key per column.",
-            ));
-        };
-        for k in obj.keys() {
+    for record in &records {
+        for (k, _) in &record.0 {
             if !columns.contains(k) {
                 columns.push(k.clone());
             }
         }
     }
-    let rows = values
+    let rows = records
         .iter()
-        .map(|v| {
+        .map(|r| {
             columns
                 .iter()
-                .map(|c| match v.get(c) {
-                    None | Some(serde_json::Value::Null) => None,
-                    Some(serde_json::Value::String(s)) => Some(s.clone()),
-                    Some(other) => Some(other.to_string()),
+                .map(|c| {
+                    r.0.iter()
+                        .find(|(k, _)| k == c)
+                        .and_then(|(_, v)| v.clone())
                 })
                 .collect()
         })
@@ -554,8 +613,10 @@ pub async fn import(
     let quoted: Vec<String> = names.iter().map(|n| sql::ident(e, n)).collect();
     let kinds: Vec<ValueKind> = used
         .iter()
-        .map(|(_, c)| sql::kind_of_type(&c.type_name))
+        .map(|(_, c)| sql::column_kind(e, &c.type_name))
         .collect();
+    let types: Vec<String> = used.iter().map(|(_, c)| c.type_name.clone()).collect();
+    let keys: Vec<bool> = used.iter().map(|(_, c)| c.primary_key).collect();
     let ids = catalog::identity_columns(s, &req.schema, &req.table).await?;
     let (before, after) = catalog::identity_statements(e, &target, &ids, &names);
 
@@ -564,7 +625,12 @@ pub async fn import(
             .await
             .map(|_| ())
     };
-    let was_autocommit = s.tx_state().autocommit;
+    // CQL has no transactions (set_autocommit(false) is an error there), and
+    // the INSERTs are not wrapped in BEGIN BATCH either: a batch spanning
+    // partitions is an anti-pattern. Each row is its own statement; the
+    // chunks only group the progress reports.
+    let transactional = e != Engine::Cassandra;
+    let was_autocommit = transactional && s.tx_state().autocommit;
     if was_autocommit {
         s.set_autocommit(false).await?;
     }
@@ -575,13 +641,21 @@ pub async fn import(
             run(stmt.clone()).await?;
         }
         if req.replace {
-            run(format!("DELETE FROM {target}")).await?;
+            // CQL cannot DELETE without a key.
+            let clear = if e == Engine::Cassandra {
+                "TRUNCATE"
+            } else {
+                "DELETE FROM"
+            };
+            run(format!("{clear} {target}")).await?;
         }
         let t = InsertTarget {
             engine: e,
             table: &target,
             columns: &quoted,
             kinds: &kinds,
+            types: &types,
+            keys: &keys,
         };
         let mut done = 0usize;
         for chunk in data.rows.chunks(sql::ROWS_PER_INSERT) {
@@ -617,7 +691,11 @@ pub async fn import(
         Ok(done as u64)
     }
     .await;
-    let finish = s.end_transaction(outcome.is_ok()).await;
+    let finish = if transactional {
+        s.end_transaction(outcome.is_ok()).await
+    } else {
+        Ok(s.tx_state())
+    };
     if was_autocommit {
         let _ = s.set_autocommit(true).await;
     }
@@ -697,6 +775,31 @@ mod tests {
         let (cols, rows) = parse_json("{\"a\": true}\n\n{\"a\": false}\n").unwrap();
         assert_eq!(cols, ["a"]);
         assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn json_numbers_keep_every_digit() {
+        let (_, rows) = parse_json(
+            "[{\"a\": 123456789012345678901234567890, \"b\": 1.50, \"c\": -1e5, \
+             \"d\": \"x\\ny\", \"e\": {\"k\": [1, true]}, \"f\": false}]",
+        )
+        .unwrap();
+        assert_eq!(
+            rows[0],
+            [
+                Some("123456789012345678901234567890".into()),
+                Some("1.50".into()),
+                Some("-1e5".into()),
+                Some("x\ny".into()),
+                Some("{\"k\":[1,true]}".into()),
+                Some("false".into()),
+            ]
+        );
+        assert!(parse_json("[1]").is_err());
+        assert!(parse_json("{\"a\": 1}\n[2]").is_err());
+        // The last of repeated keys wins.
+        let (cols, rows) = parse_json("[{\"a\": 1, \"a\": 2}]").unwrap();
+        assert_eq!((cols.len(), rows[0][0].as_deref()), (1, Some("2")));
     }
 
     #[test]

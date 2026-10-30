@@ -5,9 +5,11 @@
 //!
 //! - `server.rs`: JSON-RPC over stdio, agent sessions, limits.
 //! - `tools.rs`: tool definitions and handlers.
-//! - `guard.rs`: one statement per call, read-only classifier, Redis lists.
+//! - `guard.rs`: one statement per call (a CQL batch counts as one), read-only
+//!   classifier, Redis lists.
 //! - `format.rs`: result tables, output caps, error text.
-//! - `catalog.rs`: per-engine search, foreign keys and execution plans.
+//! - `catalog.rs`: per-engine search (Cassandra: `system_schema`), foreign keys and
+//!   execution plans.
 //! - `audit.rs`: the activity log shown in the app.
 //! - `e2e_tests.rs`: the server against real servers, one test per engine.
 

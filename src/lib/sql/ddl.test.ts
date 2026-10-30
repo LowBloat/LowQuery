@@ -1,9 +1,20 @@
 import { describe, expect, it } from "bun:test";
 import {
 	alterTableSql,
+	canDrop,
+	createIndexSql,
+	createKeyspaceSql,
+	createSchemaSql,
 	createTableSql,
 	dropObjectSql,
+	dropSchemaSql,
+	duplicateTableSql,
 	foldName,
+	hasDdl,
+	objectTemplate,
+	schemaWord,
+	templateKinds,
+	truncateSql,
 	refreshMatviewSql,
 	renameTableSql,
 	toScript,
@@ -139,5 +150,104 @@ describe("toScript", () => {
 		expect(parts).toHaveLength(2);
 		expect(parts[0].text).toStartWith("BEGIN");
 		expect(parts[1].text).toBe("ALTER TABLE dbo.t DROP COLUMN v");
+	});
+});
+
+describe("Cassandra", () => {
+	const key = (name: string, type: string, role: string) => col(name, type, { primaryKey: role === "partition" || role === "clustering", keyRole: role });
+
+	it("folds names to lowercase only when they are plain", () => {
+		expect(foldName("Events", "cassandra")).toBe("events");
+		expect(foldName("My Events", "cassandra")).toBe("My Events");
+		expect(foldName("_x", "cassandra")).toBe("_x");
+	});
+
+	it("creates keyspaces with either replication strategy", () => {
+		expect(createSchemaSql("shop", "cassandra")).toEqual(["CREATE KEYSPACE shop WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}"]);
+		expect(createKeyspaceSql("Shop", "network", "dc1", 3)).toEqual([
+			"CREATE KEYSPACE \"Shop\" WITH replication = {'class': 'NetworkTopologyStrategy', 'dc1': 3}",
+		]);
+		expect(createKeyspaceSql("s", "network", "")[0]).toContain("'datacenter1': 3");
+		expect(dropSchemaSql("shop", "cassandra")).toEqual(["DROP KEYSPACE shop"]);
+		expect(schemaWord("cassandra")).toBe("keyspace");
+	});
+
+	it("creates a table whose first key column is the partition key", () => {
+		const plan = createTableSql("shop", "events", [key("tenant", "text", "partition"), key("ts", "timestamp", "clustering"), col("kind", "text")], "cassandra");
+		expect(plan.statements).toEqual(["CREATE TABLE shop.events (\n    tenant text,\n    ts timestamp,\n    kind text,\n    PRIMARY KEY (tenant, ts)\n)"]);
+		expect(plan.warnings[0]).toContain("partition key");
+	});
+
+	it("needs a primary key", () => {
+		const plan = createTableSql("shop", "t", [col("a", "int")], "cassandra");
+		expect(plan.statements).toEqual([]);
+		expect(plan.warnings[0]).toContain("needs a primary key");
+	});
+
+	it("adds and drops columns without the COLUMN keyword", () => {
+		const before = [key("k", "text", "partition"), col("a", "int", { keyRole: "regular" }), col("b", "int", { keyRole: "regular" })];
+		const after = [keep(before[0]), keep(before[1]), { ...col("c", "list<int>"), origin: null }];
+		expect(alterTableSql("ks", "t", before, after, "cassandra").statements).toEqual(["ALTER TABLE ks.t DROP b", "ALTER TABLE ks.t ADD c list<int>"]);
+	});
+
+	it("renames clustering columns only", () => {
+		const before = [key("k", "text", "partition"), key("c", "int", "clustering"), col("v", "int", { keyRole: "regular" })];
+		const renamed = alterTableSql("ks", "t", before, [keep(before[0]), keep(before[1], { name: "d" }), keep(before[2])], "cassandra");
+		expect(renamed.statements).toEqual(["ALTER TABLE ks.t RENAME c TO d"]);
+		const refused = alterTableSql("ks", "t", before, [keep(before[0], { name: "j" }), keep(before[1]), keep(before[2], { name: "w" })], "cassandra");
+		expect(refused.statements).toEqual([]);
+		expect(refused.warnings).toEqual([
+			"Cassandra renames only clustering columns; k keeps its name.",
+			"Cassandra renames only clustering columns; v keeps its name.",
+		]);
+	});
+
+	it("refuses what CQL cannot alter", () => {
+		const before = [key("k", "text", "partition"), col("v", "int", { keyRole: "regular" })];
+		const plan = alterTableSql("ks", "t", before, [keep(before[0]), keep(before[1], { type: "bigint" })], "cassandra", "u");
+		expect(plan.statements).toEqual([]);
+		expect(plan.warnings).toContain("Cassandra cannot change the type of v; add a column and copy the data.");
+		expect(plan.warnings).toContain("Cassandra cannot rename a table.");
+		const dropKey = alterTableSql("ks", "t", before, [keep(before[1])], "cassandra");
+		expect(dropKey.statements).toEqual([]);
+		expect(dropKey.warnings[0]).toContain("part of the primary key");
+	});
+
+	it("drops every kind with its own statement", () => {
+		expect(dropObjectSql("ks", "t", "table", "cassandra")).toEqual(["DROP TABLE ks.t"]);
+		expect(dropObjectSql("ks", "mv", "matview", "cassandra")).toEqual(["DROP MATERIALIZED VIEW ks.mv"]);
+		expect(dropObjectSql("ks", "addr", "type", "cassandra")).toEqual(["DROP TYPE ks.addr"]);
+		expect(dropObjectSql("ks", "Calc(int, text)", "function", "cassandra")).toEqual(['DROP FUNCTION ks."Calc"(int, text)']);
+		expect(dropObjectSql("ks", "total(int)", "aggregate", "cassandra")).toEqual(["DROP AGGREGATE ks.total(int)"]);
+		expect(dropObjectSql("ks", "ix", "index", "cassandra")).toEqual(["DROP INDEX ks.ix"]);
+		expect(dropObjectSql("ks", "t", "table", "cassandra", true)).toEqual(["DROP TABLE ks.t"]);
+	});
+
+	it("truncates, indexes and switches keyspace", () => {
+		expect(truncateSql("ks", "t", "cassandra")).toEqual(["TRUNCATE TABLE ks.t"]);
+		expect(createIndexSql("ks", "t", "name", "cassandra")).toBe("CREATE INDEX ix_t_name ON ks.t (name)");
+		expect(useSchemaSql("Shop", "cassandra")).toBe('USE "Shop"');
+	});
+
+	it("offers only actions CQL has", () => {
+		expect(renameTableSql("ks", "a", "b", "cassandra")).toEqual([]);
+		expect(duplicateTableSql("ks", "a", "b", true, "cassandra").statements).toEqual([]);
+		expect(templateKinds("cassandra")).toEqual(["type", "function", "aggregate", "view"]);
+		for (const kind of ["table", "matview", "type", "function", "aggregate", "index"]) {
+			expect(canDrop(kind, "cassandra")).toBe(true);
+			expect(hasDdl(kind, "cassandra")).toBe(true);
+		}
+		for (const kind of ["view", "sequence", "procedure", "package", "synonym", "foreign"]) {
+			expect(canDrop(kind, "cassandra")).toBe(false);
+		}
+	});
+
+	it("writes templates the CQL splitter keeps whole", () => {
+		for (const kind of templateKinds("cassandra")) {
+			const script = toScript([objectTemplate(kind, "ks", "cassandra")], "cassandra");
+			expect(splitStatements(script, "cassandra")).toHaveLength(1);
+		}
+		expect(objectTemplate("function", "ks", "cassandra")).toContain("$$");
+		expect(objectTemplate("view", "ks", "cassandra")).toStartWith("CREATE MATERIALIZED VIEW ks.new_view");
 	});
 });

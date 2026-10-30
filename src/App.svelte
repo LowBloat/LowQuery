@@ -11,6 +11,7 @@
 	import { ai } from "./lib/state/ai.svelte";
 	import { transfer } from "./lib/state/transfer.svelte";
 	import { emptyProfile } from "./lib/api";
+	import { engineInfo } from "./lib/engines";
 	import Sidebar from "./lib/components/Sidebar.svelte";
 	import TabBar from "./lib/components/TabBar.svelte";
 	import QueryView from "./lib/components/QueryView.svelte";
@@ -88,6 +89,7 @@
 		const tab = workspace.activeTab;
 		const profile = workspace.profile(tab?.profileId ?? null);
 		const connected = !!tab?.session;
+		const transactions = !profile || !engineInfo(profile.engine).noTransactions;
 		return [
 			appMenu("file", "File", [
 				{ label: "New query", shortcut: "Ctrl+T", action: () => workspace.newTab(tab?.profileId ?? null) },
@@ -104,10 +106,10 @@
 				{ label: "Run statement", shortcut: "Ctrl+Enter", disabled: !tab || !profile || tab.running, action: () => tab && workspace.run(tab, "statement") },
 				{ label: "Run script", shortcut: "F5", disabled: !tab || !profile || tab.running, action: () => tab && workspace.run(tab, "script") },
 				{ label: "Stop", disabled: !tab?.running, action: () => tab && workspace.cancel(tab) },
-				SEPARATOR,
-				{ label: "Commit", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, true) },
-				{ label: "Rollback", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, false) },
-				{ label: "Auto-commit", checked: tab?.autocommit ?? true, disabled: !connected, action: () => tab && workspace.setAutocommit(tab, !tab.autocommit) },
+				transactions && SEPARATOR,
+				transactions && { label: "Commit", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, true) },
+				transactions && { label: "Rollback", disabled: !tab?.inTransaction, action: () => tab && workspace.endTransaction(tab, false) },
+				transactions && { label: "Auto-commit", checked: tab?.autocommit ?? true, disabled: !connected, action: () => tab && workspace.setAutocommit(tab, !tab.autocommit) },
 			]),
 			appMenu("view", "View", [
 				{ label: "Dark theme", checked: colorScheme.isDark, action: () => colorScheme.toggle() },

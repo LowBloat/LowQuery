@@ -51,6 +51,7 @@ fn is_auth_failure(e: &AppError) -> bool {
                 | "1698 (28000)"
                 | "NOAUTH"
                 | "WRONGPASS"
+                | "AuthenticationError"
         )
     ) || e
         .code

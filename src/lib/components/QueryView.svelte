@@ -22,6 +22,8 @@
 	const engine = $derived(profile?.engine ?? "postgres");
 	/** Redis: commands instead of SQL, MULTI/EXEC instead of autocommit. */
 	const keyValue = $derived(engineInfo(engine).keyValue === true);
+	/** Cassandra: no transactions, so no autocommit switch, Commit or Rollback. */
+	const noTransactions = $derived(engineInfo(engine).noTransactions === true);
 	const completion = $derived(explorer.completion(tab.profileId));
 
 	const connectionOptions = $derived([
@@ -126,32 +128,34 @@
 			{/if}
 		</div>
 
-		<div class="lq-toolbar__group">
-			{#if !keyValue}
-				<Switch
-					label="Autocommit"
-					checked={tab.autocommit}
-					onchange={(on) => workspace.setAutocommit(tab, on)}
-				/>
-			{/if}
-			{#if !tab.autocommit || tab.inTransaction}
-				<Tooltip content={keyValue ? "Run the queued commands (EXEC)" : "Commit transaction"}>
-					{#snippet triggerChild(props)}<Button {...props} size="sm" variant="outlined" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, true)}>
-						{#snippet leading()}<Check size={14} />{/snippet}
-						{keyValue ? "EXEC" : "Commit"}
-					</Button>{/snippet}
-				</Tooltip>
-				<Tooltip content={keyValue ? "Drop the queued commands (DISCARD)" : "Roll back transaction"}>
-					{#snippet triggerChild(props)}<Button {...props} size="sm" variant="ghost" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, false)}>
-						{#snippet leading()}<Undo2 size={14} />{/snippet}
-						{keyValue ? "DISCARD" : "Rollback"}
-					</Button>{/snippet}
-				</Tooltip>
-			{/if}
-			{#if tab.inTransaction}
-				<Chip label={keyValue ? "MULTI open" : "Open transaction"} variant="warning" size="sm" />
-			{/if}
-		</div>
+		{#if !noTransactions}
+			<div class="lq-toolbar__group">
+				{#if !keyValue}
+					<Switch
+						label="Autocommit"
+						checked={tab.autocommit}
+						onchange={(on) => workspace.setAutocommit(tab, on)}
+					/>
+				{/if}
+				{#if !tab.autocommit || tab.inTransaction}
+					<Tooltip content={keyValue ? "Run the queued commands (EXEC)" : "Commit transaction"}>
+						{#snippet triggerChild(props)}<Button {...props} size="sm" variant="outlined" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, true)}>
+							{#snippet leading()}<Check size={14} />{/snippet}
+							{keyValue ? "EXEC" : "Commit"}
+						</Button>{/snippet}
+					</Tooltip>
+					<Tooltip content={keyValue ? "Drop the queued commands (DISCARD)" : "Roll back transaction"}>
+						{#snippet triggerChild(props)}<Button {...props} size="sm" variant="ghost" disabled={!tab.inTransaction || tab.running} onclick={() => workspace.endTransaction(tab, false)}>
+							{#snippet leading()}<Undo2 size={14} />{/snippet}
+							{keyValue ? "DISCARD" : "Rollback"}
+						</Button>{/snippet}
+					</Tooltip>
+				{/if}
+				{#if tab.inTransaction}
+					<Chip label={keyValue ? "MULTI open" : "Open transaction"} variant="warning" size="sm" />
+				{/if}
+			</div>
+		{/if}
 
 		<span class="ca-toolbar-spacer"></span>
 

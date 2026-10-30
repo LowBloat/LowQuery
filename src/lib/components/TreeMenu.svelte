@@ -58,7 +58,8 @@
 
 	let { oninsert, onnavigate }: Props = $props();
 
-	const TEMPLATE_ICON = { view: Eye, function: SquareFunction, procedure: Cog, sequence: Hash } as const;
+	const TEMPLATE_ICON = { view: Eye, function: SquareFunction, procedure: Cog, sequence: Hash, type: Shapes, aggregate: Sigma } as const;
+	const SYSTEM_KEYSPACES = new Set(["system", "system_schema", "system_auth", "system_distributed", "system_traces", "system_views", "system_virtual_schema"]);
 
 	function go(fn: () => unknown) {
 		fn();
@@ -159,7 +160,7 @@
 		{:else if t.type === "schema"}
 			{@const s = t.schema}
 			{@const word = schemaWord(e)}
-			{@const builtIn = e === "sqlite" && (s.name === "main" || s.name === "temp")}
+			{@const builtIn = (e === "sqlite" && (s.name === "main" || s.name === "temp")) || (e === "cassandra" && SYSTEM_KEYSPACES.has(s.name))}
 			<DropdownMenuLabel class="lq-menu-label">{s.name}</DropdownMenuLabel>
 			<DropdownMenuItem onclick={() => go(() => act.newQueryIn(p, s))}>
 				{#snippet icon()}<FilePlus2 size={15} />{/snippet}
@@ -186,7 +187,7 @@
 						{@const Icon = TEMPLATE_ICON[kind]}
 						<DropdownMenuItem onclick={() => go(() => act.template(p, s, kind))}>
 							{#snippet icon()}<Icon size={15} />{/snippet}
-							{kind.charAt(0).toUpperCase() + kind.slice(1)}
+							{e === "cassandra" && kind === "view" ? "Materialized view" : kind.charAt(0).toUpperCase() + kind.slice(1)}
 						</DropdownMenuItem>
 					{/each}
 				</DropdownMenuSub>
@@ -227,6 +228,7 @@
 			{@const o = t.obj}
 			{@const relation = RELATION_KINDS.has(o.kind)}
 			{@const table = o.kind === "table"}
+			{@const cql = e === "cassandra"}
 			<DropdownMenuLabel class="lq-menu-label">{o.name}</DropdownMenuLabel>
 			{#if REDIS_KINDS.has(o.kind)}
 				<DropdownMenuItem onclick={() => go(() => act.preview(p, s, o))}>
@@ -280,7 +282,7 @@
 						Show DDL
 					</DropdownMenuItem>
 				{/if}
-				{#if relation || hasDdl(o.kind, e)}
+				{#if relation || (hasDdl(o.kind, e) && !cql)}
 					<DropdownMenuItem onclick={() => transfer.openExport(p, s.name, { name: o.name, kind: o.kind })}>
 						{#snippet icon()}<Download size={15} />{/snippet}
 						Export…
@@ -321,14 +323,16 @@
 						{#snippet icon()}<Table2 size={15} />{/snippet}
 						Edit table…
 					</DropdownMenuItem>
-					<DropdownMenuItem onclick={() => act.renameTable(p, s, o)}>
-						{#snippet icon()}<TextCursorInput size={15} />{/snippet}
-						Rename…
-					</DropdownMenuItem>
-					<DropdownMenuItem onclick={() => act.duplicateTable(p, s, o)}>
-						{#snippet icon()}<CopyPlus size={15} />{/snippet}
-						Duplicate…
-					</DropdownMenuItem>
+					{#if !cql}
+						<DropdownMenuItem onclick={() => act.renameTable(p, s, o)}>
+							{#snippet icon()}<TextCursorInput size={15} />{/snippet}
+							Rename…
+						</DropdownMenuItem>
+						<DropdownMenuItem onclick={() => act.duplicateTable(p, s, o)}>
+							{#snippet icon()}<CopyPlus size={15} />{/snippet}
+							Duplicate…
+						</DropdownMenuItem>
+					{/if}
 					<DropdownMenuItem onclick={() => act.truncate(p, s, o)}>
 						{#snippet icon()}<Eraser size={15} />{/snippet}
 						Empty table…

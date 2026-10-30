@@ -101,6 +101,7 @@ pub async fn search(session: &Session, pattern: &str, limit: usize) -> AppResult
     let current = session.current_schema();
     let mut found = match session.engine() {
         Engine::Redis => return redis_search(session, &pattern, limit).await,
+        Engine::Cassandra => cassandra_search(session, &pattern).await?,
         Engine::Sqlite => sqlite_search(session, &pattern, limit).await?,
         Engine::Oracle => {
             let sql = |modern| oracle_search_sql(&pattern, current.as_deref(), modern);
@@ -142,7 +143,8 @@ pub async fn foreign_keys(
     table: &str,
 ) -> AppResult<(Vec<ForeignKey>, Vec<(Option<String>, String, ForeignKey)>)> {
     let engine = session.engine();
-    if engine == Engine::Redis {
+    // Neither Redis nor CQL has foreign keys.
+    if matches!(engine, Engine::Redis | Engine::Cassandra) {
         return Ok((Vec::new(), Vec::new()));
     }
     if table.is_empty() {
@@ -168,6 +170,11 @@ pub async fn explain(session: &Session, sql: &str) -> AppResult<String> {
     if engine == Engine::Redis {
         return Err(AppError::invalid(
             "Redis has no execution plans: each command runs as it is.",
+        ));
+    }
+    if engine == Engine::Cassandra {
+        return Err(AppError::invalid(
+            "CQL has no EXPLAIN: Cassandra does not report execution plans. Filter on the partition key (and clustering columns in order) so the query reads one partition.",
         ));
     }
     check_text(sql)?;
@@ -203,7 +210,7 @@ pub async fn explain(session: &Session, sql: &str) -> AppResult<String> {
                 .collect();
             Ok(sqlite_plan_tree(&rows))
         }
-        Engine::Redis => unreachable!(),
+        Engine::Redis | Engine::Cassandra => unreachable!(),
     }
 }
 
@@ -226,7 +233,9 @@ fn dialect(engine: Engine) -> Dialect {
         Engine::Oracle => Dialect::Oracle,
         Engine::Mysql | Engine::Mariadb => Dialect::Mysql,
         Engine::Sqlserver => Dialect::SqlServer,
-        Engine::Sqlite | Engine::Redis => Dialect::Sqlite,
+        // CQL strings are quoted like SQLite's: `'..'` with `''` inside, no
+        // backslash escapes. Redis and Cassandra never reach the SQL builders.
+        Engine::Sqlite | Engine::Redis | Engine::Cassandra => Dialect::Sqlite,
     }
 }
 
@@ -547,6 +556,121 @@ async fn sqlite_search(
     }
     tables.extend(columns);
     Ok(tables)
+}
+
+// ---------------------------------------------------------------------------
+// Cassandra
+
+/// Keyspaces of the server itself, left out of searches.
+const CASSANDRA_SYSTEM: &[&str] = &[
+    "system",
+    "system_schema",
+    "system_auth",
+    "system_distributed",
+    "system_traces",
+    "system_views",
+    "system_virtual_schema",
+];
+/// Rows read from one `system_schema` table for one keyspace.
+const CASSANDRA_ROWS: usize = 100_000;
+
+/// What `system_schema` holds about one keyspace.
+#[derive(Debug, Default)]
+struct CassandraKeyspace {
+    tables: Vec<String>,
+    views: Vec<String>,
+    types: Vec<String>,
+    /// (table or view, column, CQL type)
+    columns: Vec<(String, String, String)>,
+}
+
+/// The matches of `pattern` in one keyspace: tables, materialized views and
+/// types by name, columns by name. `system_schema` tables only filter on
+/// their partition key, so the contains test happens here.
+fn cassandra_matches(keyspace: &str, k: &CassandraKeyspace, pattern: &str) -> Vec<ObjectMatch> {
+    let p = pattern.to_lowercase();
+    let hit = |name: &str| name.to_lowercase().contains(&p);
+    let table = |name: &String, kind: &str| ObjectMatch {
+        schema: Some(keyspace.to_string()),
+        table: name.clone(),
+        kind: kind.into(),
+        column: None,
+        column_type: None,
+    };
+    let mut out: Vec<ObjectMatch> = Vec::new();
+    out.extend(
+        k.tables
+            .iter()
+            .filter(|n| hit(n))
+            .map(|n| table(n, "table")),
+    );
+    out.extend(
+        k.views
+            .iter()
+            .filter(|n| hit(n))
+            .map(|n| table(n, "materialized view")),
+    );
+    out.extend(k.types.iter().filter(|n| hit(n)).map(|n| table(n, "type")));
+    for (relation, column, ty) in &k.columns {
+        if hit(column) {
+            let view = k.views.contains(relation);
+            out.push(ObjectMatch {
+                schema: Some(keyspace.to_string()),
+                table: relation.clone(),
+                kind: if view { "materialized view" } else { "table" }.into(),
+                column: Some(column.clone()),
+                column_type: Some(ty.clone()),
+            });
+        }
+    }
+    out
+}
+
+async fn cassandra_search(session: &Session, pattern: &str) -> AppResult<Vec<ObjectMatch>> {
+    let mut found = Vec::new();
+    for keyspace in session.list_schemas().await? {
+        if CASSANDRA_SYSTEM.contains(&keyspace.as_str()) {
+            continue;
+        }
+        let ks = literal(Dialect::Sqlite, &keyspace)?;
+        let names = |sql: String| async move {
+            let r = query(session, &sql, CASSANDRA_ROWS).await?;
+            Ok::<_, AppError>(r.rows.iter().map(|row| cell(row, 0)).collect::<Vec<_>>())
+        };
+        let tables = names(format!(
+            "SELECT table_name FROM system_schema.tables WHERE keyspace_name = {ks}"
+        ))
+        .await?;
+        let views = names(format!(
+            "SELECT view_name FROM system_schema.views WHERE keyspace_name = {ks}"
+        ))
+        .await?;
+        let types = names(format!(
+            "SELECT type_name FROM system_schema.types WHERE keyspace_name = {ks}"
+        ))
+        .await?;
+        let columns = query(
+            session,
+            &format!(
+                "SELECT table_name, column_name, type FROM system_schema.columns \
+                 WHERE keyspace_name = {ks}"
+            ),
+            CASSANDRA_ROWS,
+        )
+        .await?
+        .rows
+        .iter()
+        .map(|row| (cell(row, 0), cell(row, 1), cell(row, 2)))
+        .collect();
+        let k = CassandraKeyspace {
+            tables,
+            views,
+            types,
+            columns,
+        };
+        found.extend(cassandra_matches(&keyspace, &k, pattern));
+    }
+    Ok(found)
 }
 
 fn tables_of(r: &ExecResult) -> Vec<ObjectMatch> {
@@ -976,7 +1100,7 @@ fn check_explainable(engine: Engine, sql: &str) -> AppResult<()> {
         Engine::Sqlite => &[
             "SELECT", "WITH", "INSERT", "UPDATE", "DELETE", "REPLACE", "VALUES",
         ],
-        Engine::Redis => &[],
+        Engine::Redis | Engine::Cassandra => &[],
     };
     let rest = after_comments(sql, mysql);
     if rest.is_empty() {
@@ -1277,6 +1401,44 @@ fn lines(r: &ExecResult, i: usize) -> String {
 mod tests {
     use super::*;
     use crate::model::{ConnectionProfile, ValueKind};
+
+    #[test]
+    fn cassandra_search_filters_and_ranks() {
+        let k = CassandraKeyspace {
+            tables: vec!["users".into(), "events".into(), "UserLog".into()],
+            views: vec!["users_by_email".into()],
+            types: vec!["user_address".into(), "money".into()],
+            columns: vec![
+                ("users".into(), "id".into(), "uuid".into()),
+                ("users".into(), "email".into(), "text".into()),
+                ("users_by_email".into(), "email".into(), "text".into()),
+                ("events".into(), "user_id".into(), "uuid".into()),
+            ],
+        };
+        let mut found = cassandra_matches("shop", &k, "USER");
+        rank(&mut found, "user", Some("other"));
+        let names: Vec<_> = found
+            .iter()
+            .map(|m| (m.table.as_str(), m.kind.as_str(), m.column.as_deref()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("users", "table", None),
+                ("UserLog", "table", None),
+                ("users_by_email", "materialized view", None),
+                ("user_address", "type", None),
+                ("events", "table", Some("user_id")),
+            ]
+        );
+        assert_eq!(found[4].column_type.as_deref(), Some("uuid"));
+        let found = cassandra_matches("shop", &k, "email");
+        assert_eq!(found.len(), 3, "{found:?}");
+        assert!(found
+            .iter()
+            .any(|m| m.table == "users_by_email" && m.kind == "materialized view"));
+        assert!(cassandra_matches("shop", &k, "zzz").is_empty());
+    }
 
     #[test]
     fn literals_per_dialect() {

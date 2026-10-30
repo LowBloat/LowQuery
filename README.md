@@ -24,7 +24,7 @@
 
 ---
 
-LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It connects to **PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite and Redis**, and treats each one as itself: every engine goes through its own native driver and protocol, with server-side row limits, exact values and the script rules of that engine. Oracle needs **no Oracle Client or Instant Client**. The app is built with Tauri and Rust, so it starts fast and stays small.
+LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. It connects to **PostgreSQL, Oracle, MySQL, MariaDB, SQL Server, SQLite, Redis and Apache Cassandra**, and treats each one as itself: every engine goes through its own native driver and protocol, with server-side row limits, exact values and the script rules of that engine. Oracle needs **no Oracle Client or Instant Client**. The app is built with Tauri and Rust, so it starts fast and stays small.
 
 | Database | How LowQuery connects |
 | --- | --- |
@@ -34,6 +34,7 @@ LowQuery is an **open-source desktop SQL client** for Windows, Linux and macOS. 
 | SQL Server and Azure SQL | TDS protocol with [`tiberius`](https://crates.io/crates/tiberius), SQL logins or Windows accounts |
 | SQLite | Embedded engine ([`rusqlite`](https://crates.io/crates/rusqlite)), opens local database files |
 | Redis and Valkey | RESP3 with [`redis-rs`](https://crates.io/crates/redis): redis-cli commands, results as tables, keys browsed by type |
+| Apache Cassandra | CQL native protocol with [`scylla`](https://crates.io/crates/scylla) (Cassandra 3.x to 5.x): keyspaces, tables, views, types and functions from `system_schema`, exact CQL values |
 
 ![LowQuery on Windows with the schema browser, SQL editor and result grid](assets/screenshots/lowquery-desktop.png)
 
@@ -120,8 +121,9 @@ gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQ
 | SQL Server, Azure SQL | `SET ROWCOUNT` for plain SELECT batches | Exact decimal, datetime2 and datetimeoffset precision, uniqueidentifier, binary as hex | Not exposed by the driver yet | TDS attention | `GO` batches, `BEGIN...END` blocks, `[brackets]` |
 | SQLite | Stops stepping at the limit | Storage class and declared type; blobs as hex | — | `sqlite3_interrupt` | Trigger bodies, `[brackets]`, backticks |
 | Redis, Valkey | Long replies cut at the limit; the tree uses `SCAN` | RESP3 types: maps as field/value, `WITHSCORES` as member/score, `INFO` as rows | — | `CLIENT UNBLOCK` for blocking commands | One redis-cli command per line, `#` comments |
+| Apache Cassandra | Paging: the page size comes from the limit and reading stops there | Exact `varint` and `decimal`, `timestamp`, `date`, `time`, `duration`, `uuid`, blobs as hex; collections, tuples, UDTs and vectors as CQL literals | Server warnings (tombstones, aggregations without a partition key) | Stops waiting; CQL cannot cancel on the server | `;`, `BEGIN BATCH ... APPLY BATCH` as one statement, `$$` bodies, `--`, `//` and `/* */` comments |
 
-**Network configuration.** PostgreSQL, MySQL, MariaDB and SQL Server use host, port and database, with `disable`, `prefer`, `require` or `verify-full` TLS. SQL Server also takes a named instance (found through SQL Server Browser) and can sign in with the Windows account running LowQuery. Oracle reads the `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or an Instant Client on `PATH`, or a folder you pick (`IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported), and accepts TCPS descriptors. SQLite opens or creates a local file. Redis takes host, port, an optional ACL user and the database index.
+**Network configuration.** PostgreSQL, MySQL, MariaDB and SQL Server use host, port and database, with `disable`, `prefer`, `require` or `verify-full` TLS. SQL Server also takes a named instance (found through SQL Server Browser) and can sign in with the Windows account running LowQuery. Oracle reads the `tnsnames.ora` found through `TNS_ADMIN`, `ORACLE_HOME`, registered Oracle homes or an Instant Client on `PATH`, or a folder you pick (`IFILE`, `NAMES.DEFAULT_DOMAIN` and Latin-1 files are supported), and accepts TCPS descriptors. SQLite opens or creates a local file. Redis takes host, port, an optional ACL user and the database index. Cassandra takes one or more contact points (comma separated), the port (9042), an optional user and password, a default keyspace, the local datacenter and the TLS mode; it has no transactions, so every statement commits on its own.
 
 Connection profiles are stored in `connections.json` in the user configuration folder (`%APPDATA%\LowBloat\LowQuery\config` on Windows, `~/Library/Application Support/dev.LowBloat.LowQuery` on macOS, `~/.config/lowquery` on Linux). Open query tabs and their SQL are restored on the next start.
 
