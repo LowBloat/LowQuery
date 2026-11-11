@@ -121,8 +121,14 @@ jobs:
           set -euo pipefail
           mkdir -p out
           bundle=src-tauri/target/release/bundle
-          cp "$(find $bundle/deb -name '*.deb' | head -n 1)" "out/LowQuery-${VERSION}-linux-x64.deb"
-          cp "$(find $bundle/rpm -name '*.rpm' | head -n 1)" "out/LowQuery-${VERSION}-linux-x64.rpm"
+          # Each package keeps its updater signature: .deb and .rpm installs
+          # update themselves through dpkg/rpm.
+          deb="$(find $bundle/deb -name '*.deb' | head -n 1)"
+          cp "$deb" "out/LowQuery-${VERSION}-linux-x64.deb"
+          cp "$deb.sig" "out/LowQuery-${VERSION}-linux-x64.deb.sig"
+          rpm="$(find $bundle/rpm -name '*.rpm' | head -n 1)"
+          cp "$rpm" "out/LowQuery-${VERSION}-linux-x64.rpm"
+          cp "$rpm.sig" "out/LowQuery-${VERSION}-linux-x64.rpm.sig"
           appimage="$(find $bundle/appimage -name '*.AppImage' | head -n 1)"
           cp "$appimage" "out/LowQuery-${VERSION}-linux-x64.AppImage"
           cp "$appimage.sig" "out/LowQuery-${VERSION}-linux-x64.AppImage.sig"

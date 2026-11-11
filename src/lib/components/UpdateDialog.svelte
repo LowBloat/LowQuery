@@ -73,6 +73,8 @@
 					{busyTabs} {busyTabs === 1 ? "tab has" : "tabs have"} a running query or an open transaction. Restarting
 					closes every session; uncommitted changes are rolled back.
 				</Alert>
+			{:else if updates.ready && !updates.installing}
+				<Alert severity="info">The update is downloaded and verified. Restarting installs it.</Alert>
 			{/if}
 			{#if updates.installing}
 				<Progress
@@ -90,7 +92,7 @@
 			{#if updates.policy?.canInstall}
 				<Button variant="filled" loading={updates.installing} onclick={() => updates.install()}>
 					{#snippet leading()}<RefreshCw size={15} />{/snippet}
-					Install and restart
+					{updates.ready ? "Restart now" : "Install and restart"}
 				</Button>
 			{:else}
 				<Button variant="filled" onclick={() => updates.download()}>

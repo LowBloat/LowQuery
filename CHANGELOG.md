@@ -4,6 +4,12 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-11-11
+
+### Fixed
+- **Automatic updates on Linux `.deb` and `.rpm` installs.** They were only told a new version existed: the release published no updater signature or manifest entry for them, and the app treated them as owned by the package manager. Now, when dpkg or rpm really owns the binary, the update downloads and installs the new package itself (pkexec asks for the administrator password), like Windows, macOS and the AppImage. The Arch package and portable copies keep the download link.
+- **Updates show up much sooner.** The app checked every six hours; it now checks every 10 minutes and when the window regains focus, downloads the update in the background and only then offers **Restart to update**, which installs it right away.
+
 ## [0.5.4] - 2026-10-30
 
 ### Added
@@ -173,7 +179,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/LowBloat/LowQuery/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/LowBloat/LowQuery/compare/v0.5.1...v0.5.2

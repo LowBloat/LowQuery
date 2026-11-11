@@ -331,10 +331,10 @@
 	</div>
 
 	<footer class="lq-side__footer">
-		{#if updates.available}
+		{#if updates.offered}
 			<button type="button" class="lq-side__update" onclick={() => (updates.dialogOpen = true)}>
 				<ArrowUpCircle size={15} aria-hidden="true" />
-				Update to {updates.available.version}
+				{updates.label}
 			</button>
 		{:else}
 			<span class="lq-side__version">{updates.currentVersion ? `LowQuery ${updates.currentVersion}` : "LowQuery"}</span>
