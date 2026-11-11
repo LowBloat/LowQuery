@@ -166,7 +166,7 @@ jobs:
   macos:
     name: macOS universal (Apple Silicon + Intel)
     needs: [verify, checks]
-    runs-on: macos-14
+    runs-on: macos-15
     env:
       VERSION: ${{ needs.verify.outputs.version }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
