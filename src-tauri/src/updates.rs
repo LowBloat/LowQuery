@@ -1,9 +1,11 @@
 //! Update policy: which installations can update themselves.
 //!
-//! Windows installers (NSIS/MSI), macOS app bundles and writable AppImages
-//! download the signed update, install it and restart. Linux packages
-//! (.deb/.rpm) belong to the system package manager and portable copies have
-//! no installer, so they are only told a new version exists.
+//! Windows installers (NSIS/MSI), macOS app bundles, writable AppImages and
+//! .deb/.rpm installs download the signed update, install it and restart. For
+//! .deb and .rpm the updater hands the new package to dpkg/rpm through pkexec,
+//! which asks for the administrator password. The Arch package (pacman owns
+//! it) and portable copies have no installer, so they are only told a new
+//! version exists.
 
 use serde::Serialize;
 
@@ -33,15 +35,36 @@ impl UpdatePolicy {
                     target: Some(format!("linux-{}-appimage", std::env::consts::ARCH)),
                 };
             }
-            let channel = match bundle {
-                Some(BundleType::Deb) => "deb",
-                Some(BundleType::Rpm) => "rpm",
-                _ if std::env::current_exe()
-                    .is_ok_and(|p| p.starts_with("/usr") || p.starts_with("/opt")) =>
+            let exe = std::env::current_exe().ok();
+            // The updater picks dpkg or rpm from the bundle type built into the
+            // binary; only trust it when that package manager really owns this
+            // file (a binary copied into the Arch package keeps a marker too).
+            let package = match bundle {
+                Some(BundleType::Deb)
+                    if exe
+                        .as_deref()
+                        .is_some_and(|p| owned_by(p, "dpkg-query", "-S")) =>
                 {
-                    "package"
+                    Some("deb")
                 }
-                _ => "portable",
+                Some(BundleType::Rpm)
+                    if exe.as_deref().is_some_and(|p| owned_by(p, "rpm", "-qf")) =>
+                {
+                    Some("rpm")
+                }
+                _ => None,
+            };
+            if let Some(channel) = package {
+                return Self {
+                    channel,
+                    can_install: true,
+                    target: Some(format!("linux-{}-{channel}", std::env::consts::ARCH)),
+                };
+            }
+            let channel = if exe.is_some_and(|p| p.starts_with("/usr") || p.starts_with("/opt")) {
+                "package"
+            } else {
+                "portable"
             };
             return Self {
                 channel,
@@ -62,6 +85,17 @@ impl UpdatePolicy {
             target: None,
         }
     }
+}
+
+/// Whether `program` (dpkg-query -S, rpm -qf) names a package that installed `path`.
+fn owned_by(path: &std::path::Path, program: &str, flag: &str) -> bool {
+    std::process::Command::new(program)
+        .arg(flag)
+        .arg(path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 fn dir_is_writable(dir: &std::path::Path) -> bool {

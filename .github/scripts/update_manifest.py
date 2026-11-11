@@ -21,8 +21,11 @@ def build_manifest(version, repo, assets, notes):
     signed(["windows-x86_64", "windows-x86_64-nsis"], f"LowQuery-{version}-windows-x64-setup.exe")
     signed(["windows-x86_64-msi"], f"LowQuery-{version}-windows-x64.msi")
     signed(["darwin-aarch64", "darwin-x86_64"], f"LowQuery-{version}-macos-universal.app.tar.gz")
-    # No generic Linux key: .deb and .rpm installs must never receive an AppImage.
+    # One key per Linux format, never a generic one: a .deb install must get a
+    # .deb, an .rpm install an .rpm, and the Arch package nothing (pacman owns it).
     signed(["linux-x86_64-appimage"], f"LowQuery-{version}-linux-x64.AppImage")
+    signed(["linux-x86_64-deb"], f"LowQuery-{version}-linux-x64.deb")
+    signed(["linux-x86_64-rpm"], f"LowQuery-{version}-linux-x64.rpm")
 
     return {
         "version": version,
@@ -47,7 +50,7 @@ if __name__ == "__main__":
         notes = result.stdout.strip()
     assets = Path("release-assets")
     doc = build_manifest(version, repo, assets, notes)
-    required = {"windows-x86_64", "darwin-aarch64", "linux-x86_64-appimage"}
+    required = {"windows-x86_64", "darwin-aarch64", "linux-x86_64-appimage", "linux-x86_64-deb", "linux-x86_64-rpm"}
     missing = required - doc["platforms"].keys()
     if missing:
         raise SystemExit(f"Signed updater artifacts missing for: {sorted(missing)}")
