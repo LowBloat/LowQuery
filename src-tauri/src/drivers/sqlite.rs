@@ -259,7 +259,6 @@ impl LiteSession {
             }
             let info = stmt
                 .columns()
-                .iter()
                 .map(|c| {
                     let decl = c
                         .decl_type()
@@ -422,7 +421,6 @@ fn statement(
 
     let declared: Vec<(String, Option<String>)> = stmt
         .columns()
-        .iter()
         .map(|c| {
             (
                 c.name().to_string(),
@@ -654,7 +652,6 @@ fn column_origins(stmt: &Statement<'_>) -> Option<Vec<Option<(String, String, St
     // rusqlite panics on names that are not UTF-8.
     std::panic::catch_unwind(AssertUnwindSafe(|| {
         stmt.columns_with_metadata()
-            .iter()
             .map(|m| {
                 Some((
                     m.database_name()?.to_string(),
