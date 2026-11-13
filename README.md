@@ -84,7 +84,7 @@ The [latest release](https://github.com/LowBloat/LowQuery/releases/latest) inclu
 gh attestation verify LowQuery-<version>-linux-x64.AppImage --repo LowBloat/LowQuery
 ```
 
-**Updates.** Installed copies on Windows, macOS, AppImage, `.deb` and `.rpm` update themselves: LowQuery checks for a new release every few minutes and when the window regains focus, downloads it in the background and offers **Restart to update** once it is ready. Updates are signed and verified before installation. `.deb` and `.rpm` installs ask for the administrator password, since dpkg or rpm installs the new package. The Arch package and portable copies are told when a new version is out and link to the download.
+**Updates.** Installed copies on Windows, macOS, AppImage, `.deb` and `.rpm` update themselves: LowQuery checks for a new release every minute and when the window comes back, downloads it in the background and offers **Restart to update** once it is ready. Updates are signed and verified before installation. `.deb` and `.rpm` installs ask for the administrator password, since dpkg or rpm installs the new package. The Arch package and portable copies are told when a new version is out and link to the download.
 
 **First launch on Windows and macOS.** The installers are not code-signed yet, so the system warns on first launch:
 
