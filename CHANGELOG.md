@@ -4,8 +4,13 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-11-13
+
 ### Fixed
 - **New versions show up within a minute.** The app checks every minute instead of every 10, and again when the window comes back from the tray. A check that hung (after sleep or a network change) no longer blocks the later ones, a failed background download is not repeated every minute, and checks no longer keep their discarded results in memory.
+
+### Security
+- SQLite 3.54.1, bundled through `rusqlite` 0.41.1: opening a database together with a crafted `-wal` file no longer returns uninitialized page-cache memory (RUSTSEC-2026-0459).
 
 ## [0.5.5] - 2026-11-11
 
@@ -182,7 +187,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.6...HEAD
+[0.5.6]: https://github.com/LowBloat/LowQuery/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/LowBloat/LowQuery/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...v0.5.4
 [0.5.3]: https://github.com/LowBloat/LowQuery/compare/v0.5.2...v0.5.3
