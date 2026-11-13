@@ -50,7 +50,7 @@ redis = { version = "1.7", default-features = false, features = ["aio", "tokio-c
 # Apache Cassandra: native CQL protocol (v4/v5), TLS through rustls.
 scylla = { version = "1.9", default-features = false, features = ["rustls-023"] }
 # SQLite: embedded engine compiled into the app.
-rusqlite = { version = "0.40", features = ["bundled", "column_decltype", "column_metadata"] }
+rusqlite = { version = "0.41", features = ["bundled", "column_decltype", "column_metadata"] }
 keyring = { version = "=3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 # DBeaver import: credentials-config.json is AES-128-CBC.
 aes = "0.9"
