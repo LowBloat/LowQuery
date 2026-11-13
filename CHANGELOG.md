@@ -4,6 +4,9 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+### Fixed
+- **New versions show up within a minute.** The app checks every minute instead of every 10, and again when the window comes back from the tray. A check that hung (after sleep or a network change) no longer blocks the later ones, a failed background download is not repeated every minute, and checks no longer keep their discarded results in memory.
+
 ## [0.5.5] - 2026-11-11
 
 ### Fixed
