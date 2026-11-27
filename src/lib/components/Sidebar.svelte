@@ -150,9 +150,10 @@
 <nav class="lq-side" aria-label="Connections">
 	<header class="lq-side__brand">
 		<svg class="lq-side__logo" viewBox="0 0 40 40" aria-hidden="true">
-			<rect width="40" height="40" fill="#171a17" />
-			<path d="M10 9h5v20h15v5H10z" fill="#f1f3ee" />
-			<path d="M21 9h9v5h-9zM21 17h6v5h-6z" fill="#b8f238" />
+			<rect width="40" height="40" fill="#5aa9ff" />
+			<path d="M8 9h24v6H8z" fill="#f1f3ee" />
+			<path d="M8 17h24v14H8z" fill="#171a17" />
+			<path d="M17 17h2v14h-2zM8 23h24v2H8z" fill="#5aa9ff" />
 		</svg>
 		<span class="lq-side__name">LowQuery</span>
 		<span class="ca-toolbar-spacer"></span>
