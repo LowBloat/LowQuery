@@ -4,6 +4,11 @@ All notable changes to LowQuery are documented here. The format follows [Keep a 
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-11-27
+
+### Changed
+- **New LowQuery logo.** The app, installer, taskbar and sidebar icons use the new LowQuery mark from the LowBloat family: a blue tile with a table grid.
+
 ## [0.5.6] - 2026-11-13
 
 ### Fixed
@@ -187,7 +192,8 @@ First public release, with PostgreSQL and Oracle.
 - Schema browser for tables, views, sequences, routines, packages and columns.
 - Drafts restored on restart, light and dark themes, and a layout for narrow windows.
 
-[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.6...HEAD
+[Unreleased]: https://github.com/LowBloat/LowQuery/compare/v0.5.7...HEAD
+[0.5.7]: https://github.com/LowBloat/LowQuery/compare/v0.5.6...v0.5.7
 [0.5.6]: https://github.com/LowBloat/LowQuery/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/LowBloat/LowQuery/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/LowBloat/LowQuery/compare/v0.5.3...v0.5.4
